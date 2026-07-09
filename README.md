@@ -1,4 +1,4 @@
-# Immersion Pack Lab v3
+# Immersion Pack Lab v4
 
 Parametric design and teaching app for a **static or stirred immersion-cooled
 21700 battery pack** with an **internal water-cooled tube heat exchanger**
@@ -85,3 +85,17 @@ Holders: 8 g/cell, 20% flow blockage. Interstitial mode: thermosiphon head
 8 mm, stratification x0.35 (distributed sinks) - an engineering judgement,
 not CFD. OCV/entropic/plating arrays are generic NMC shapes. Vehicle
 defaults: 1900 kg, CdA 0.62, Crr 0.009, eta 0.92, regen 0.65 capped 60 kW.
+
+## v4: workbench restructure and 3D view
+Layout reorganised around the workflow: 1 Design (all pack/cooling/structure
+inputs in three domain columns, with a live 3D or plan view), 2 Duty (load
+definition beside the transient response), 3 Results, 4 Improve (diagnosis,
+sensitivity, goal-seek, sweep, A/B pin), 5 Safety (runaway screening,
+expansion, leak checklist), 6 Compare (architectures, coolant shoot-out,
+production packs), 7 Learn, 8 Validate and tune (Wang benchmark, rig
+calibration, model-tuning knobs, fluid table). The sidebar is now a status
+card plus save/load and report export only. Student version removed.
+The 3D view renders every cell (coloured by centre-vs-edge tendency), tube
+runs with translucent fin envelopes, the oil fill level, and the enclosure;
+it follows format, pitch, tube plane (including interstitial) live.
+Old saved designs load unchanged (same widget keys).

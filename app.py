@@ -671,7 +671,7 @@ DEFAULTS = dict(
     T_service_max=60.0,
     # v2 additions
     k_dcir=0.012, k_rad=0.9, limit_core=False, tube_plane="Top of pack",
-    K_loop=5.0, cal_h=1.0, student=False,
+    K_loop=5.0, cal_h=1.0,
     E_tr=55.0, frac_oil=0.6, zone_pitches=1.5, vent_L=5.0,
     # v3 additions
     fmt="21700", v_max=4.2, v_cut=0.05, chg_mult=1.10, entropic=True,
@@ -910,419 +910,9 @@ def _w(fn, label, key, default, **kw):
         st.session_state[k] = default
     return fn(label, key=k, **kw)
 
-def sidebar_inputs(cool_df) -> dict:
-    d = dict(DEFAULTS)
-    sb = st.sidebar
-    sb.markdown("## Design controls")
-    d["student"] = _w(sb.checkbox, "Student version (hides Decide tab)", "student", False)
 
-    with sb.expander("Save / load design", expanded=False):
-        state = {k: v for k, v in st.session_state.items()
-                 if k.startswith("w_") and isinstance(v, (int, float, str, bool))}
-        st.download_button("Download design (.json)", data=pd.Series(state).to_json(),
-                           file_name="pack_design.json", use_container_width=True)
-        up = st.file_uploader("Load design", type="json", key="design_up")
-        if up is not None:
-            sig = up.name + str(up.size)
-            if st.session_state.get("applied_design") != sig:
-                loaded = pd.read_json(up, typ="series").to_dict()
-                for k, v in loaded.items():
-                    if k.startswith("w_"):
-                        st.session_state[k] = v
-                st.session_state["applied_design"] = sig
-                st.rerun()
-
-    with sb.expander("Pack and cells", expanded=False):
-        d["fmt"] = _w(st.selectbox, "Cell format", "fmt", "21700",
-                      options=list(FORMATS) + ["Custom"],
-                      help="Presets from teardown literature; 4680 DCIR is an estimate.")
-        if d["fmt"] != "Custom" and st.button(f"Apply {d['fmt']} preset values"):
-            f_ = FORMATS[d["fmt"]]
-            st.session_state["w_dcell"] = f_["d_cell"] * 1000
-            st.session_state["w_hcell"] = f_["h_cell"] * 1000
-            st.session_state["w_cap"] = f_["cap"]
-            st.session_state["w_rdc"] = f_["rdc"]
-            st.session_state["w_mcell"] = f_["mcell"]
-            st.session_state["w_pitch"] = max(st.session_state.get("w_pitch", 27.0),
-                                              f_["d_cell"] * 1000 + 6.0)
-            st.rerun()
-        d["d_cell"] = _w(st.slider, "Cell diameter [mm]", "dcell", 21.0, min_value=10.0, max_value=60.0, step=0.5) / 1000
-        d["h_cell"] = _w(st.slider, "Cell height [mm]", "hcell", 70.0, min_value=40.0, max_value=130.0, step=1.0) / 1000
-        d["Ns"] = _w(st.number_input, "Cells in series (S)", "Ns", 108, min_value=1, max_value=300)
-        d["Np"] = _w(st.number_input, "Cells in parallel (P)", "Np", 10, min_value=1, max_value=60)
-        with st.popover("Suggest S x P from targets"):
-            tE = st.number_input("Target energy [kWh]", 1.0, 200.0, 20.0, 0.5)
-            tV = st.number_input("Target nominal voltage [V]", 48.0, 900.0, 400.0, 10.0)
-            if st.button("Suggest and apply"):
-                vn = st.session_state.get("w_vnom", 3.7)
-                cp_ = st.session_state.get("w_cap", 5.0)
-                ns = max(int(round(tV / vn)), 1)
-                np_ = max(int(round(tE * 1000 / (ns * vn * cp_))), 1)
-                st.session_state["w_Ns"], st.session_state["w_Np"] = ns, np_
-                st.rerun()
-        d["cap_Ah"] = _w(st.number_input, "Cell capacity [Ah]", "cap", 5.0, min_value=1.0, max_value=8.0, step=0.1)
-        d["v_nom"] = _w(st.number_input, "Cell nominal voltage [V]", "vnom", 3.7, min_value=3.0, max_value=4.0, step=0.05)
-        d["r_dc"] = _w(st.number_input, "Cell DCIR at 25 degC [mOhm]", "rdc", 25.0, min_value=5.0, max_value=80.0, step=1.0)
-        d["k_dcir"] = _w(st.slider, "DCIR fall with T [%/K]", "kdcir", 1.2, min_value=0.0, max_value=3.0, step=0.1,
-                         help="R(T) = R25 exp(-k(T-25)). 0 disables the coupling.") / 100.0
-        d["m_cell"] = _w(st.number_input, "Cell mass [kg]", "mcell", 0.070, min_value=0.04, max_value=0.09, step=0.001, format="%.3f")
-        d["cp_cell"] = _w(st.number_input, "Cell cp [J/kgK]", "cpcell", 950.0, min_value=700.0, max_value=1200.0, step=10.0)
-        d["k_rad"] = _w(st.slider, "Cell radial conductivity k_r [W/mK]", "krad", 0.9, min_value=0.3, max_value=2.0, step=0.1)
-    with sb.expander("Layout", expanded=False):
-        d["arrangement"] = _w(st.radio, "Cell arrangement", "arr", "Square",
-                              options=["Square", "Hexagonal"], horizontal=True)
-        d["pitch"] = _w(st.slider, "Cell pitch [mm]", "pitch", 27.0, min_value=22.0, max_value=35.0, step=0.5) / 1000
-        d["edge_margin"] = _w(st.slider, "Edge margin [mm]", "edge", 10.0, min_value=5.0, max_value=40.0, step=1.0) / 1000
-        d["tube_zone"] = _w(st.slider, "Tube zone height above cells [mm]", "tz", 35.0, min_value=15.0, max_value=80.0, step=1.0) / 1000
-        d["gas_gap"] = _w(st.slider, "Gas/expansion headspace [mm]", "gas", 10.0, min_value=0.0, max_value=40.0, step=1.0) / 1000
-        d["end_fraction"] = _w(st.slider, "Fraction of cell end-caps wetted", "ends", 0.0, min_value=0.0, max_value=1.0, step=0.1)
-    with sb.expander("Immersion coolant", expanded=True):
-        names = list(cool_df["name"])
-        default_fl = "MIVOLT DF7" if "MIVOLT DF7" in names else names[0]
-        d["coolant"] = _w(st.selectbox, "Fluid", "fluid", default_fl, options=names)
-        d["u_oil"] = _w(st.slider, "Forced stirring velocity [m/s]", "uoil", 0.0, min_value=0.0, max_value=0.20, step=0.005,
-                        help="On top of the predicted thermosiphon; the larger of the two is used.")
-    with sb.expander("Internal heat exchanger (tubes)", expanded=True):
-        d["n_tubes"] = _w(st.slider, "Number of tubes", "ntub", 16, min_value=1, max_value=60)
-        d["tube_od"] = _w(st.slider, "Tube OD [mm]", "tod", 10.0, min_value=4.0, max_value=25.0, step=0.5) / 1000
-        d["tube_wall"] = _w(st.slider, "Wall thickness [mm]", "twall", 1.0, min_value=0.5, max_value=3.0, step=0.25) / 1000
-        d["tube_mat"] = _w(st.selectbox, "Tube material", "tmat", "Copper", options=list(K_TUBE))
-        d["passes"] = _w(st.slider, "Passes per tube (serpentine)", "pass", 1, min_value=1, max_value=4)
-        d["tube_plane"] = _w(st.selectbox, "Tube plane position", "tplane", "Top of pack",
-                             options=["Top of pack", "Interstitial (between rows)",
-                                      "Mid-height", "Below the cells"],
-                             help="Drives the thermosiphon head. Top = strongest self-circulation.")
-        d["fins_on"] = _w(st.checkbox, "Annular fins on tubes", "fins", True)
-        if d["fins_on"]:
-            d["fin_h"] = _w(st.slider, "Fin height [mm]", "finh", 8.0, min_value=2.0, max_value=20.0, step=0.5) / 1000
-            d["fin_t"] = _w(st.slider, "Fin thickness [mm]", "fint", 0.5, min_value=0.2, max_value=1.5, step=0.1) / 1000
-            d["fin_p"] = _w(st.slider, "Fin pitch [mm]", "finp", 4.0, min_value=2.0, max_value=12.0, step=0.5) / 1000
-            d["fin_mat"] = _w(st.selectbox, "Fin material", "finm", "Aluminium", options=["Aluminium", "Copper"])
-    with sb.expander("Electrical model", expanded=False):
-        d["k_dcir"] = d["k_dcir"]  # (slider lives in Pack and cells)
-        d["v_max"] = _w(st.slider, "Charge voltage limit [V/cell]", "vmax", 4.2, min_value=4.0, max_value=4.4, step=0.05)
-        d["chg_mult"] = _w(st.slider, "Charge DCIR multiplier", "chgm", 1.10, min_value=1.0, max_value=1.5, step=0.05)
-        d["C_chg"] = _w(st.slider, "Charge C-rate rating (CC)", "cchg", 1.0, min_value=0.2, max_value=4.0, step=0.1,
-                        help="Plating map derates this below 25 degC.")
-        d["v_cut"] = _w(st.slider, "CV cut-off [C]", "vcut", 0.05, min_value=0.02, max_value=0.2, step=0.01)
-        d["entropic"] = _w(st.checkbox, "Include entropic heat (+/- T dU/dT)", "entro", True)
-        d["soc0"] = _w(st.slider, "Start SoC", "soc0", 0.90, min_value=0.0, max_value=1.0, step=0.05)
-        d["track_soc"] = _w(st.checkbox, "Track SoC on Constant-C duty", "tsoc", False,
-                            help="Off = thermal-only (v2 behaviour): current runs regardless of SoC.")
-    with sb.expander("Structure and busbars", expanded=False):
-        d["R_bus"] = _w(st.number_input, "Busbar resistance total [mOhm] (0 = auto)", "rbus", 0.0, min_value=0.0, max_value=20.0, step=0.1)
-        d["bus_J"] = _w(st.slider, "Busbar design current density [A/mm2]", "busj", 5.0, min_value=2.0, max_value=10.0, step=0.5)
-        d["m_holder_g"] = _w(st.slider, "Cell holder mass [g/cell]", "mhold", 8.0, min_value=0.0, max_value=25.0, step=1.0)
-        d["holder_block"] = _w(st.slider, "Holder blockage of gap flow", "hblk", 0.20, min_value=0.0, max_value=0.6, step=0.05,
-                               help="Fraction of the riser flow area obstructed; throttles the thermosiphon.")
-        d["sigma_MPa"] = _w(st.slider, "Enclosure allowable stress [MPa]", "sigma", 80.0, min_value=30.0, max_value=200.0, step=5.0)
-        d["stiff"] = _w(st.slider, "Stiffened-panel knock-down", "stiff", 0.45, min_value=0.2, max_value=1.0, step=0.05,
-                        help="1.0 = plain flat plate; ribs and swages let you go thinner.")
-        d["p_des_bar"] = _w(st.slider, "Design (burst-disc) pressure [bar g]", "pdes", 0.5, min_value=0.1, max_value=2.0, step=0.1)
-    with sb.expander("Water loop", expanded=True):
-        d["loop_fluid"] = _w(st.selectbox, "Loop fluid", "loopf", "Water", options=list(WATER_LOOP))
-        d["flow_lpm"] = _w(st.slider, "Total flow [L/min]", "flow", 10.0, min_value=0.5, max_value=60.0, step=0.5)
-        d["T_water_in"] = _w(st.slider, "Inlet temperature [degC]", "twin", 20.0, min_value=0.0, max_value=40.0, step=1.0)
-    with sb.expander("Duty and limits", expanded=True):
-        d["duty"] = _w(st.selectbox, "Duty profile", "duty", "Constant C",
-                       options=["Constant C", "Drive cycle", "Charge (CC-CV)",
-                                "Cycling (dis/chg x N)", "Fast charge then rest",
-                                "Pulse train", "CSV upload"])
-        d["C1"] = _w(st.slider, "C-rate (primary / discharge)", "c1", 2.0, min_value=0.2, max_value=8.0, step=0.1)
-        if d["duty"] == "Constant C":
-            d["dirn"] = _w(st.radio, "Direction", "dirn", "Discharge",
-                           options=["Discharge", "Charge"], horizontal=True)
-        if d["duty"] == "Drive cycle":
-            d["cycle"] = _w(st.selectbox, "Cycle", "cycle", "WLTP Class 3b",
-                            options=list(DRIVE_CYCLES),
-                            help="Coarse breakpoint profiles scaled to the official distance; "
-                                 "fine for thermal work. Use CSV upload for the official 1 Hz trace.")
-            d["repeat_cyc"] = _w(st.checkbox, "Repeat cycle to fill simulation", "repcyc", True)
-            with st.popover("Vehicle parameters"):
-                d["veh_m"] = _w(st.number_input, "Vehicle mass [kg]", "vehm", 1900.0, min_value=600.0, max_value=4000.0, step=50.0)
-                d["CdA"] = _w(st.number_input, "Cd x A [m2]", "cda", 0.62, min_value=0.3, max_value=1.5, step=0.01)
-                d["Crr"] = _w(st.number_input, "Rolling resistance Crr", "crr", 0.009, min_value=0.005, max_value=0.02, step=0.001, format="%.3f")
-                d["eta_dt"] = _w(st.slider, "Drivetrain efficiency", "etad", 0.92, min_value=0.7, max_value=0.98, step=0.01)
-                d["eta_rg"] = _w(st.slider, "Regen recovery fraction", "etar", 0.65, min_value=0.0, max_value=0.95, step=0.05)
-                d["P_rg"] = _w(st.slider, "Regen power cap [kW]", "prg", 60.0, min_value=0.0, max_value=300.0, step=5.0)
-                d["P_acc"] = _w(st.number_input, "Accessory load [W]", "pacc", 500.0, min_value=0.0, max_value=5000.0, step=50.0)
-        if d["duty"] == "Charge (CC-CV)":
-            st.caption("CC at the plating-derated charge rating, CV at the voltage limit. "
-                       "Set start SoC in Electrical model.")
-        if d["duty"] == "Cycling (dis/chg x N)":
-            d["n_cyc"] = _w(st.slider, "Number of cycles", "ncyc", 3, min_value=1, max_value=10)
-            d["cyc_rest"] = _w(st.slider, "Rest between phases [s]", "crest", 600.0, min_value=0.0, max_value=3600.0, step=60.0)
-            d["soc_min"] = _w(st.slider, "Discharge down to SoC", "socmin", 0.10, min_value=0.0, max_value=0.5, step=0.05)
-        if d["duty"] in ("Fast charge then rest", "Pulse train"):
-            d["t1"] = _w(st.slider, "Primary phase duration [s]", "t1", 900.0, min_value=60.0, max_value=3600.0, step=30.0)
-        if d["duty"] == "Pulse train":
-            d["C2"] = _w(st.slider, "C-rate (secondary)", "c2", 0.5, min_value=0.0, max_value=4.0, step=0.1)
-            d["t2"] = _w(st.slider, "Secondary phase duration [s]", "t2", 600.0, min_value=30.0, max_value=3600.0, step=30.0)
-        if d["duty"] == "CSV upload":
-            dup = st.file_uploader("Duty CSV: columns t_s and C (or P_kW)", type="csv", key="duty_up")
-            if dup is not None:
-                try:
-                    st.session_state["duty_csv"] = duty_from_csv(dup, d)
-                    tt, cc = st.session_state["duty_csv"]
-                    st.caption(f"Loaded {len(tt)} points, {tt[-1]:.0f} s, peak {cc.max():.1f}C.")
-                except Exception as e:
-                    st.error(f"Could not parse: {e}")
-        d["duration"] = _w(st.slider, "Simulation length [s]", "dur", 3600.0, min_value=300.0, max_value=10800.0, step=300.0)
-        d["T_start"] = _w(st.slider, "Start temperature [degC]", "tstart", 25.0, min_value=0.0, max_value=45.0, step=1.0)
-        d["T_limit"] = _w(st.slider, "Cell temperature limit [degC]", "tlim", 45.0, min_value=35.0, max_value=60.0, step=1.0,
-                          help="AMG HPB80 runs a 45 degC set point deliberately (lower DCIR).")
-        d["limit_core"] = _w(st.checkbox, "Apply limit to core (not can)", "limcore", False)
-        d["T_amb"] = _w(st.slider, "Ambient [degC]", "tamb", 25.0, min_value=-10.0, max_value=45.0, step=1.0)
-    with sb.expander("Advanced", expanded=False):
-        d["bottom_gap"] = _w(st.slider, "Gap under cells [mm]", "bgap", 5.0, min_value=0.0, max_value=20.0, step=1.0) / 1000
-        d["manifold_margin"] = _w(st.slider, "Manifold margin each end [mm]", "mman", 20.0, min_value=0.0, max_value=60.0, step=5.0) / 1000
-        d["h_ext"] = _w(st.slider, "Casing-to-ambient h [W/m2K]", "hext", 5.0, min_value=0.0, max_value=25.0, step=0.5)
-        d["K_loop"] = _w(st.slider, "Thermosiphon minor-loss K", "kloop", 5.0, min_value=0.0, max_value=20.0, step=0.5)
-        d["cal_h"] = _w(st.slider, "Oil-film calibration factor", "cal_h", 1.0, min_value=0.4, max_value=2.2, step=0.01,
-                        help="Multiplies both oil-film h values. Fit it to rig data in Results.")
-        d["struct_mass"] = _w(st.number_input, "Structure mass override [kg] (0 = auto)", "smass", 0.0, min_value=0.0, max_value=200.0, step=1.0)
-        d["T_service_max"] = _w(st.slider, "Max service T for expansion sizing [degC]", "tserv", 60.0, min_value=40.0, max_value=90.0, step=5.0)
-    return d
-
-# ------------------------------------------------------------------ #
-#  Main app                                                           #
-# ------------------------------------------------------------------ #
-def main():
-    st.set_page_config(page_title="Immersion Pack Lab", layout="wide", page_icon=None)
-    st.markdown(CSS, unsafe_allow_html=True)
-    st.title("Immersion Pack Lab v2")
-    st.markdown("Static or stirred **immersion-cooled 21700 pack** with an **internal "
-                "water-cooled tube heat exchanger** (ICDC architecture, Wang et al. 2023). "
-                "Now with predicted thermosiphon, DCIR(T), core temperature, worst-cell "
-                "spread, architecture comparison, and design save/load.")
-
-    if "cool_df" not in st.session_state:
-        st.session_state.cool_df = _read_coolants()
-    cool_df = st.session_state.cool_df
-    d = sidebar_inputs(cool_df)
-    if not d["student"] and st.sidebar.checkbox("Edit fluid property table", False):
-        st.session_state.cool_df = st.sidebar.data_editor(cool_df, num_rows="dynamic", height=250)
-        cool_df = st.session_state.cool_df
-
-    fl = fluid_dict(cool_df[cool_df["name"] == d["coolant"]].iloc[0])
-    g = build_geometry(d)
-    res0 = solve_steady(d, g, fl, 1.0, d["T_amb"], C_rate=d["C1"])
-    masses = build_masses(d, g, fl, res0["fin"])
-    Cmax = max_continuous_C(d, g, fl, d["T_amb"], d["T_limit"])
-    # ---- duty spec ----
-    if d["duty"] == "Drive cycle":
-        tc, vc, D_km = cycle_speed(d["cycle"])
-        if d["repeat_cyc"] and tc[-1] < d["duration"]:
-            reps = int(math.ceil(d["duration"] / tc[-1]))
-            vc = np.tile(vc, reps)[: int(d["duration"]) + 1]
-            tc = np.arange(0.0, len(vc), 1.0)
-        P_b = vehicle_battery_power(tc, vc, d)
-        spec = dict(kind="P", t=tc, P=P_b, v=vc, D_km=D_km)
-    elif d["duty"] == "Charge (CC-CV)":
-        spec = dict(kind="chg", t=np.arange(0.0, d["duration"] + 1e-9, 2.0))
-    elif d["duty"] == "Cycling (dis/chg x N)":
-        spec = dict(kind="cyc", t=np.arange(0.0, d["duration"] + 1e-9, 2.0))
-    else:
-        csv_tc = st.session_state.get("duty_csv") if d["duty"] == "CSV upload" else None
-        t_arr0, C_arr0 = duty_profile(d["duty"], d["duration"], d["C1"], d["t1"], d["C2"],
-                                      d["t2"], csv_tc)
-        spec = dict(kind="C", t=t_arr0, C=C_arr0)
-    tr = simulate_pack(d, g, fl, masses, d["T_amb"], spec)
-    t_arr, C_arr = tr["t"], tr["C"]
-    C_steady = max(tr["C_rms"], 0.05)
-    res = solve_steady(d, g, fl, 1.0, d["T_amb"], C_rate=C_steady)
-    Q_duty = res["Q_eff"]
-    loop = WATER_LOOP[d["loop_fluid"]]
-    P_pump = water_pump_power(d, g, loop)["P"]
-    P_stir = stirrer_power(d, g, fl, d["u_oil"])
-
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
-    k1.metric("Pack", f"{masses['E_kwh']:.1f} kWh / {d['Ns']*d['v_nom']:.0f} V",
-              f"{g['N']} x 21700")
-    k2.metric(f"Cell can / core at {C_steady:.2f}C rms",
-              f"{res['T_b']:.1f} / {res['T_core']:.1f}",
-              f"{(res['T_core'] if d['limit_core'] else res['T_b'])-d['T_limit']:+.1f} vs limit",
-              delta_color="inverse")
-    k3.metric("Max continuous C-rate", f"{Cmax:.2f} C",
-              f"to stay under {d['T_limit']:.0f} degC")
-    k4.metric("Heat at this duty", f"{Q_duty/1000:.2f} kW",
-              f"parasitic {P_pump+P_stir:.0f} W")
-    k5.metric("Coolant on board", f"{masses['V_oil_L']:.0f} L",
-              f"{masses['m_oil']:.0f} kg {fl['name']}")
-    k6.metric("Pack: mass and density", f"{masses['m_pack']:.0f} kg",
-              f"{masses['whkg_pack']:.0f} Wh/kg | {masses['whl_pack']:.0f} Wh/L")
-    st.caption(f"Self-circulation {res['u_ts']*1000:.1f} mm/s | oil stratification "
-               f"~{res['dT_loop']:.1f} K | water rise {res['dT_water']:.1f} K | estimated "
-               f"best-to-worst cell spread {res['spread']:.1f} K (criterion < 5 K) | "
-               f"DCIR at {res['T_b']:.0f} degC = {r_of_T(d, res['T_b']):.1f} mOhm "
-               f"vs {d['r_dc']:.0f} at 25.")
-
-    cpin1, cpin2, _ = st.columns([1, 1, 4])
-    summary = dict(Fluid=fl["name"], T_can=round(res["T_b"], 1), T_core=round(res["T_core"], 1),
-                   Cmax=round(Cmax, 2), Spread_K=round(res["spread"], 1),
-                   Oil_kg=round(masses["m_oil"]), Pack_kg=round(masses["m_pack"]),
-                   Whkg=round(masses["whkg_pack"]), Parasitic_W=round(P_pump + P_stir, 1),
-                   Tubes=d["n_tubes"], Flow_lpm=d["flow_lpm"], Stir=d["u_oil"])
-    if cpin1.button("Pin current design as A"):
-        st.session_state["pinned"] = summary
-    if "pinned" in st.session_state and cpin2.button("Clear pin"):
-        del st.session_state["pinned"]
-    if "pinned" in st.session_state:
-        st.markdown("**A/B comparison** (A = pinned, B = current)")
-        st.dataframe(pd.DataFrame([st.session_state["pinned"], summary],
-                                  index=["A (pinned)", "B (current)"]),
-                     use_container_width=True)
-
-    tab_names = ["Results", "Layout", "Architectures", "Coolant shoot-out",
-                 "Learn the physics", "Decide", "Benchmark vs Wang 2023"]
-    if d["student"]:
-        tab_names.remove("Decide")
-    tabs = st.tabs(tab_names)
-    tb = {n: t for n, t in zip(tab_names, tabs)}
-
-    # ---------------- Results ---------------- #
-    with tb["Results"]:
-        st.plotly_chart(chain_schematic(res, Q_duty), use_container_width=True)
-        c1, c2 = st.columns([1.1, 1])
-        with c1:
-            figR, worst = resistance_chart(res)
-            st.plotly_chart(figR, use_container_width=True)
-            st.markdown(f"<p class='small-note'>Casing leak to ambient in parallel: "
-                        f"R = {res['R_atm']:.2f} K/W, carrying {res['Q_atm']:.0f} W of the "
-                        f"{Q_duty:.0f} W. Parasitics: water pump {P_pump:.1f} W"
-                        + (f", stirrer {P_stir:.1f} W" if P_stir > 0 else "")
-                        + ".</p>", unsafe_allow_html=True)
-        with c2:
-            st.plotly_chart(waterfall_chart(res, Q_duty, d), use_container_width=True)
-
-        band = st.checkbox("Show +/-30% oil-film uncertainty band", False)
-        figT = go.Figure()
-        if band:
-            trs = []
-            for cfac in (0.7, 1.3):
-                dd = dict(d); dd["cal_h"] = d["cal_h"] * cfac
-                trs.append(simulate_pack(dd, g, fl, masses, d["T_amb"], spec))
-            figT.add_trace(go.Scatter(
-                x=np.concatenate([tr["t"], tr["t"][::-1]]) / 60,
-                y=np.concatenate([trs[0]["T_b"], trs[1]["T_b"][::-1]]),
-                fill="toself", fillcolor="rgba(192,57,43,0.12)",
-                line=dict(width=0), name="h +/-30%", hoverinfo="skip"))
-        figT.add_trace(go.Scatter(x=tr["t"] / 60, y=tr["T_core"], name="Cell core",
-                                  line=dict(color="#7A1F1F", width=2, dash="dot")))
-        figT.add_trace(go.Scatter(x=tr["t"] / 60, y=tr["T_b"], name="Cell surface",
-                                  line=dict(color="#C0392B", width=3)))
-        figT.add_trace(go.Scatter(x=tr["t"] / 60, y=tr["T_il"], name="Bulk oil",
-                                  line=dict(color=ACCENT, width=3)))
-        figT.add_hline(y=d["T_limit"], line_dash="dash", line_color="#7A1F1F",
-                       annotation_text=f"limit {d['T_limit']:.0f} degC")
-        figT.add_trace(go.Scatter(x=t_arr / 60, y=C_arr, name="C-rate", yaxis="y2",
-                                  line=dict(color="#9AA5AF", dash="dot")))
-        if d["duty"] != "Constant C" or d["track_soc"]:
-            figT.add_trace(go.Scatter(x=tr["t"] / 60, y=tr["soc"] * 4, name="SoC (x4 on C axis)",
-                                      yaxis="y2", line=dict(color="#2E7D52", width=2)))
-        meas = st.session_state.get("meas_data")
-        if meas is not None:
-            figT.add_trace(go.Scatter(x=meas[0] / 60, y=meas[1], mode="markers",
-                                      name="Measured cell", marker=dict(color=INK, size=5)))
-        figT.update_layout(height=400, title="Transient response over the duty cycle",
-                           xaxis_title="Time [min]", yaxis_title="Temperature [degC]",
-                           yaxis2=dict(title="C-rate / SoC x4", overlaying="y", side="right",
-                                       showgrid=False,
-                                       range=[min(0, float(C_arr.min()) * 1.2),
-                                              max(float(np.abs(C_arr).max()) * 1.6, 4.2)]),
-                           plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)",
-                           legend=dict(orientation="h", y=1.12))
-        st.plotly_chart(figT, use_container_width=True)
-        if spec["kind"] == "P":
-            st.caption(f"{d['cycle']}: official distance {spec['D_km']:.2f} km per cycle, "
-                       f"peak {tr['C'].max():.2f}C discharge / {-tr['C'].min():.2f}C regen, "
-                       f"C_rms {tr['C_rms']:.2f} (the steady solve above uses this), "
-                       f"SoC {tr['soc'][0]*100:.0f} -> {tr['soc'][-1]*100:.0f}%. "
-                       "Coarse breakpoint profile scaled to official distance; thermally adequate.")
-        elif spec["kind"] in ("chg", "cyc"):
-            st.caption(f"SoC {tr['soc'][0]*100:.0f} -> {tr['soc'][-1]*100:.0f}%, "
-                       f"peak charge {-tr['C'].min():.2f}C (plating-derated), "
-                       f"cycles completed: {tr['cycles_done']}. Charge above the voltage "
-                       "knee tapers in CV; cold packs are current-starved by the plating map.")
-
-        st.download_button("Download design report (.html)",
-                           data=report_html(d, g, fl, res, masses, Cmax, [figT]),
-                           file_name="pack_design_report.html", mime="text/html")
-
-        with st.expander("Overlay rig data and fit the calibration factor"):
-            mup = st.file_uploader("Measured CSV: columns t_s, T_cell", type="csv", key="meas_up")
-            if mup is not None:
-                try:
-                    mdf = pd.read_csv(mup)
-                    cols = {c.lower().strip(): c for c in mdf.columns}
-                    st.session_state["meas_data"] = (
-                        mdf[cols["t_s"]].to_numpy(float), mdf[cols["t_cell"]].to_numpy(float))
-                    st.success(f"Loaded {len(mdf)} points; shown on the chart above.")
-                except Exception as e:
-                    st.error(f"Could not parse: {e}")
-            if st.session_state.get("meas_data") is not None and st.button(
-                    "Fit oil-film calibration factor to this data"):
-                tm, Tm = st.session_state["meas_data"]
-                with st.spinner("Sweeping calibration factor 0.4-2.2..."):
-                    c_best, rmse = fit_calibration(d, g, fl, masses, d["T_amb"],
-                                                   t_arr, C_arr, tm, Tm)
-                st.session_state["w_cal_h"] = c_best
-                st.success(f"Best fit cal_h = {c_best:.2f} (RMSE {rmse:.2f} K) - applied to "
-                           "the Advanced slider. Same pattern as the spray app's 0.41.")
-                st.rerun()
-
-        c3, c4 = st.columns(2)
-        with c3:
-            st.markdown("**Film coefficients and regimes**")
-            hdf = pd.DataFrame([
-                ["Cell surface (oil)", f"{res['h_cell']:.0f}",
-                 f"nat {res['h_cell_nat']:.0f} / flow {res['h_cell_for']:.0f}",
-                 f"Ra = {res['Ra_cell']:.2e}, gap factor {res['gapf']:.2f}"],
-                ["Tube outside (oil)", f"{res['h_tube']:.0f}",
-                 f"nat {res['h_tube_nat']:.0f} / flow {res['h_tube_for']:.0f}",
-                 f"Ra_D = {res['Ra_tube']:.2e}, fin eff {res['fin']['eta']:.2f}, "
-                 f"area x{res['fin']['area_gain']:.1f}"],
-                ["Tube inside (water)", f"{res['h_water']:.0f}",
-                 res["water_regime"], f"Re = {res['Re_water']:.0f}"],
-            ], columns=["Interface", "h [W/m2K]", "Split / regime", "Detail"])
-            st.dataframe(hdf, hide_index=True, use_container_width=True)
-            st.markdown(f"<p class='small-note'>'flow' includes the predicted thermosiphon "
-                        f"({res['u_ts']*1000:.1f} mm/s) or your stirring, whichever is larger. "
-                        f"Calibration factor on oil films: {d['cal_h']:.2f}. Water warms "
-                        f"{res['dT_water']:.1f} K end to end. Oil-side HX area "
-                        f"{res['A_oilside']:.2f} m2 vs cell area {g['A_cells']:.2f} m2.</p>",
-                        unsafe_allow_html=True)
-        with c4:
-            st.markdown("**Mass and packaging audit**")
-            mdf2 = pd.DataFrame([
-                ["Cells", masses["m_cells"]], ["Coolant", masses["m_oil"]],
-                ["Tubes", masses["m_tubes"]], ["Fins", masses["m_fins"]],
-                ["Busbars", masses["m_bus"]], ["Cell holders", masses["m_holders"]],
-                [f"Enclosure (calc, {masses['enc']['t_mm']:.1f} mm eff.)", masses["m_struct"]],
-            ], columns=["Item", "kg"])
-            mdf2["% of pack"] = 100 * mdf2["kg"] / masses["m_pack"]
-            st.dataframe(mdf2.round(1), hide_index=True, use_container_width=True)
-            st.markdown(
-                f"<p class='small-note'>Box (inner): {g['Lx']*1000:.0f} x {g['Ly']*1000:.0f} x "
-                f"{g['Lz']*1000:.0f} mm, {g['n_cols']} x {g['n_rows']} grid, gap "
-                f"{g['gap_mm']:.1f} mm. Thermal buffer {(masses['C_oil']+masses['C_batt'])/1000:.0f} "
-                f"kJ/K. Worst cell (near water outlet, pack centre-top) "
-                f"~{res['T_worst']:.1f} degC; best ~{res['T_best']:.1f}. Reference: AMG HPB80 "
-                f"is 68.5 Wh/kg with 14 L of pumped dielectric.</p>",
-                unsafe_allow_html=True)
-
-    # ---------------- Layout ---------------- #
-    with tb["Layout"]:
-        st.plotly_chart(layout_figure(d, g), use_container_width=True)
-        st.caption(f"Blue lines are the {d['n_tubes']} tube runs in the {d['tube_zone']*1000:.0f} mm "
-                   f"zone above the cells ({d['tube_plane'].lower()}), manifolds at each end. "
-                   "Cell colour is a qualitative centre-vs-edge temperature tendency: the "
-                   "worst-cell estimate combines this with the water-side warm-up. "
-                   f"Plan free flow area {g['A_flow']*1e4:.0f} cm2, gap hydraulic diameter "
-                   f"{g['D_h']*1000:.0f} mm - these drive the thermosiphon.")
-
-    # ---------------- Architectures ---------------- #
-    with tb["Architectures"]:
+def arch_tab(d, g, fl, masses, C_steady):
+    if True:
         st.markdown(f"Same pack, same {C_steady:.2f}C-rms duty, same water loop - four ways "
                     "to build the thermal system. This is the 'is it worth doing' slide.")
         adf = compare_architectures(d, g, fl, masses, d["T_amb"], C_steady)
@@ -1353,8 +943,9 @@ def main():
                    "efficiency, ~25 mL of fluid per cell (the HPB80 ratio). Kelvin per watt: "
                    "work the bottleneck, then buy the cheapest watts.")
 
-    # ---------------- Coolant shoot-out ---------------- #
-    with tb["Coolant shoot-out"]:
+
+def coolant_tab(d, g, cool_df):
+    if True:
         st.markdown("Every fluid in the reviewed table, run through the **same pack at the "
                     f"same duty ({d['C1']:.1f}C continuous)**, thermosiphon and DCIR(T) "
                     "included. Non-dielectric fluids are thermal references only.")
@@ -1399,8 +990,9 @@ def main():
                    "end-2025). The esters are the pragmatic middle. Review notes from the "
                    "source spreadsheet apply.")
 
-    # ---------------- Learn ---------------- #
-    with tb["Learn the physics"]:
+
+def learn_tab(d, g, fl, res, masses, cool_df, loop):
+    if True:
         st.markdown("Work top to bottom: each panel is one physical idea, using **your live "
                     "design** for the numbers.")
         with st.expander("1. The whole story: two thin films own the problem", expanded=True):
@@ -1592,9 +1184,10 @@ def main():
   coolant_comparison_reviewed.xlsx.
 """)
 
-    # ---------------- Decide ---------------- #
-    if not d["student"]:
-        with tb["Decide"]:
+
+def improve_core(d, g, fl, masses, res, Q_duty, C_steady, cool_df):
+    if True:
+        if True:
             st.markdown("Auto-diagnosis of **this** design at **this** duty, then the "
                         "cheapest fixes ranked by what they actually buy.")
             for level, msg in diagnose(d, g, fl, masses, res, d["T_limit"], Q_duty):
@@ -1669,6 +1262,10 @@ def main():
                                              f"contour = {d['T_limit']:.0f} degC limit")
                     st.plotly_chart(figH, use_container_width=True)
 
+
+def runaway_ui(d, g, fl, masses, res):
+    if True:
+        if True:
             with st.expander("Thermal-runaway screening (order of magnitude)"):
                 cr1, cr2 = st.columns(2)
                 with cr1:
@@ -1703,8 +1300,8 @@ Screening numbers only: vent jets, ejecta and local boiling are not modelled."""
     else:
         st.sidebar.info("Student version: Decide tab hidden.")
 
-    # ---------------- Benchmark ---------------- #
-    with tb["Benchmark vs Wang 2023"]:
+def bench_wang_tab():
+    if True:
         st.markdown("The same correlations and two-node network, applied to the **exact rig "
                     "of Wang et al. (2023)**: six prismatic dummy cells (148 x 97 x 27 mm) in "
                     "transformer oil, four 6 mm copper tubes at the top, 5 degC water at "
@@ -1737,6 +1334,9 @@ inconsistent (Table 3 in kelvin gives 0.30 W/mK, matching their Table 7, vs ~0.1
 oil); their h values are back-calculated through a lumped model; and the vertical-plate
 correlation is slightly conservative. Treat this app's oil-side h as honest to ~+/-30% -
 or pin it with the calibration fit in Results once your own rig data exists.""")
+
+def bench_prod_tab(masses, Cmax):
+    if True:
 
         st.markdown("---")
         st.markdown("**Production packs: where this design sits.** Teardown and "
@@ -1778,6 +1378,7 @@ or pin it with the calibration fit in Results once your own rig data exists.""")
                    "(438 kg, 55 kWh, bottom cold plate). AMG HPB80 = batterydesign.net. "
                    "This design's peak column shows thermal continuous rating, which "
                    "understates a 30 s peak.")
+
 
 # ------------------------------------------------------------------ #
 #  Smoke test                                                         #
@@ -2153,6 +1754,601 @@ Wang et al. 2023 benchmark: 33.0 vs 32.3 degC measured.</p>
 Hausen-Gnielinski correlations; DCIR(T), entropic heat, thermosiphon and busbar terms included.
 Sources: Wang 2023 (J. Energy Storage 62, 106821); coolant_comparison_reviewed.xlsx.</p>
 </body></html>"""
+
+
+# ------------------------------------------------------------------ #
+#  v4: 3D pack view                                                   #
+# ------------------------------------------------------------------ #
+def _add_cyl_z(V, F, I, xc, yc, z0, z1, r, val, n=10):
+    """Append a vertical cylinder (side + top cap) to vertex/face lists."""
+    b = len(V)
+    th = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    ring = np.column_stack([xc + r * np.cos(th), yc + r * np.sin(th)])
+    for x, y in ring: V.append((x, y, z0))
+    for x, y in ring: V.append((x, y, z1))
+    V.append((xc, yc, z1))
+    I.extend([val] * (2 * n + 1))
+    for k in range(n):
+        k2 = (k + 1) % n
+        F.append((b + k, b + k2, b + n + k))
+        F.append((b + k2, b + n + k2, b + n + k))
+        F.append((b + n + k, b + n + k2, b + 2 * n))
+
+def _add_cyl_x(V, F, I, x0, x1, yc, zc, r, val, n=12):
+    """Append a horizontal (along-x) open cylinder."""
+    b = len(V)
+    th = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    ring = np.column_stack([yc + r * np.cos(th), zc + r * np.sin(th)])
+    for y, z in ring: V.append((x0, y, z))
+    for y, z in ring: V.append((x1, y, z))
+    I.extend([val] * (2 * n))
+    for k in range(n):
+        k2 = (k + 1) % n
+        F.append((b + k, b + k2, b + n + k))
+        F.append((b + k2, b + n + k2, b + n + k))
+
+def _mesh(V, F, I, **kw):
+    V = np.array(V); F = np.array(F)
+    return go.Mesh3d(x=V[:, 0], y=V[:, 1], z=V[:, 2],
+                     i=F[:, 0], j=F[:, 1], k=F[:, 2],
+                     intensity=np.array(I), flatshading=True, **kw)
+
+def pack_3d_figure(d, g, show_oil=True, show_tubes=True, show_box=True,
+                   show_fins=True):
+    fig = go.Figure()
+    # --- cells, coloured by centre-vs-edge tendency ---
+    V, F, I = [], [], []
+    z0 = d["bottom_gap"]; z1 = z0 + d["h_cell"]
+    cx, cy = g["Lx"] / 2, g["Ly"] / 2
+    cnt = 0
+    for r_ in range(g["n_rows"]):
+        for c_ in range(g["n_cols"]):
+            if cnt >= g["N"]: break
+            x = d["edge_margin"] + (c_ + 0.5) * d["pitch"] \
+                + (d["pitch"] / 2 if (d["arrangement"] == "Hexagonal" and r_ % 2) else 0)
+            y = d["edge_margin"] + d["pitch"] / 2 + r_ * g["row_pitch"]
+            val = 1.0 - math.hypot(x - cx, y - cy) / math.hypot(cx, cy)
+            _add_cyl_z(V, F, I, x, y, z0, z1, d["d_cell"] / 2, val, n=10)
+            cnt += 1
+    fig.add_trace(_mesh(V, F, I, colorscale="RdYlBu_r", showscale=False,
+                        name="cells", lighting=dict(ambient=0.55, diffuse=0.7)))
+    # --- tubes (+ translucent fin envelope) ---
+    if show_tubes:
+        Vt, Ft, It = [], [], []
+        Vf, Ff, If_ = [], [], []
+        inter = d.get("tube_plane") == "Interstitial (between rows)"
+        x0, x1 = d["manifold_margin"], g["Lx"] - d["manifold_margin"]
+        for j_ in range(d["n_tubes"]):
+            if inter:
+                gaps = max(g["n_rows"] - 1, 1)
+                yj = d["edge_margin"] + d["pitch"] / 2 \
+                     + (j_ % gaps + 0.5) * g["row_pitch"] * (g["n_rows"] - 1) / gaps
+                zj = z0 + d["h_cell"] * (0.3 + 0.4 * ((j_ // gaps) % 2))
+            else:
+                yj = (j_ + 0.5) * g["Ly"] / d["n_tubes"]
+                zj = z1 + d["tube_zone"] / 2
+            _add_cyl_x(Vt, Ft, It, x0, x1, yj, zj, d["tube_od"] / 2, 1.0)
+            if d["fins_on"] and show_fins:
+                _add_cyl_x(Vf, Ff, If_, x0, x1, yj, zj,
+                           d["tube_od"] / 2 + d["fin_h"], 1.0, n=10)
+        fig.add_trace(_mesh(Vt, Ft, It, colorscale=[[0, "#B87333"], [1, "#B87333"]],
+                            showscale=False, name="tubes"))
+        if Vf:
+            fig.add_trace(_mesh(Vf, Ff, If_, colorscale=[[0, "#8A9BA8"], [1, "#8A9BA8"]],
+                                showscale=False, opacity=0.28, name="fin envelope"))
+    # --- oil fill ---
+    if show_oil:
+        fz = g["fill_h"]
+        xs = [0, g["Lx"], g["Lx"], 0, 0, g["Lx"], g["Lx"], 0]
+        ys = [0, 0, g["Ly"], g["Ly"], 0, 0, g["Ly"], g["Ly"]]
+        zs = [0, 0, 0, 0, fz, fz, fz, fz]
+        fig.add_trace(go.Mesh3d(x=xs, y=ys, z=zs, alphahull=0, opacity=0.13,
+                                color="#E8A13A", name="oil", hoverinfo="skip"))
+    # --- enclosure wireframe ---
+    if show_box:
+        Lx, Ly, Lz = g["Lx"], g["Ly"], g["Lz"]
+        E = [((0,0,0),(Lx,0,0)),((Lx,0,0),(Lx,Ly,0)),((Lx,Ly,0),(0,Ly,0)),((0,Ly,0),(0,0,0)),
+             ((0,0,Lz),(Lx,0,Lz)),((Lx,0,Lz),(Lx,Ly,Lz)),((Lx,Ly,Lz),(0,Ly,Lz)),((0,Ly,Lz),(0,0,Lz)),
+             ((0,0,0),(0,0,Lz)),((Lx,0,0),(Lx,0,Lz)),((Lx,Ly,0),(Lx,Ly,Lz)),((0,Ly,0),(0,Ly,Lz))]
+        ex, ey, ez = [], [], []
+        for (a, b) in E:
+            ex += [a[0], b[0], None]; ey += [a[1], b[1], None]; ez += [a[2], b[2], None]
+        fig.add_trace(go.Scatter3d(x=ex, y=ey, z=ez, mode="lines",
+                                   line=dict(color=INK, width=3),
+                                   name="enclosure", hoverinfo="skip"))
+    fig.update_layout(
+        height=620, margin=dict(l=0, r=0, t=30, b=0), showlegend=False,
+        scene=dict(aspectmode="data",
+                   xaxis=dict(visible=False), yaxis=dict(visible=False),
+                   zaxis=dict(visible=False),
+                   camera=dict(eye=dict(x=1.45, y=1.25, z=0.85)),
+                   bgcolor="rgba(0,0,0,0)"),
+        paper_bgcolor="rgba(0,0,0,0)",
+        title=f"{g['N']} x {d['fmt']} cells, {d['n_tubes']} tubes "
+              f"({d['tube_plane'].lower()}), oil to {g['fill_h']*1000:.0f} mm")
+    return fig
+
+# ------------------------------------------------------------------ #
+#  v4: input panels (workbench layout)                                #
+# ------------------------------------------------------------------ #
+def design_inputs(cool_df) -> dict:
+    d = {}
+    c1, c2, c3 = st.columns(3, gap="medium")
+    with c1, st.container(border=True):
+        st.markdown("##### Cells")
+        d["fmt"] = _w(st.selectbox, "Format", "fmt", "21700",
+                      options=list(FORMATS) + ["Custom"],
+                      help="Presets from teardown data; 4680 DCIR is an estimate.")
+        if d["fmt"] != "Custom" and st.button(f"Apply {d['fmt']} preset"):
+            f_ = FORMATS[d["fmt"]]
+            st.session_state.update(w_dcell=f_["d_cell"]*1000, w_hcell=f_["h_cell"]*1000,
+                                    w_cap=f_["cap"], w_rdc=f_["rdc"], w_mcell=f_["mcell"],
+                                    w_pitch=max(st.session_state.get("w_pitch", 27.0),
+                                                f_["d_cell"]*1000 + 6.0))
+            st.rerun()
+        d["d_cell"] = _w(st.slider, "Diameter [mm]", "dcell", 21.0, min_value=10.0, max_value=60.0, step=0.5) / 1000
+        d["h_cell"] = _w(st.slider, "Height [mm]", "hcell", 70.0, min_value=40.0, max_value=130.0, step=1.0) / 1000
+        d["cap_Ah"] = _w(st.number_input, "Capacity [Ah]", "cap", 5.0, min_value=1.0, max_value=30.0, step=0.1)
+        d["v_nom"] = _w(st.number_input, "Nominal V", "vnom", 3.7, min_value=3.0, max_value=4.0, step=0.05)
+        d["r_dc"] = _w(st.number_input, "DCIR at 25 degC [mOhm]", "rdc", 25.0, min_value=2.0, max_value=80.0, step=0.5)
+        d["k_dcir"] = _w(st.slider, "DCIR fall [%/K]", "kdcir", 1.2, min_value=0.0, max_value=3.0, step=0.1) / 100.0
+        d["m_cell"] = _w(st.number_input, "Mass [kg]", "mcell", 0.070, min_value=0.03, max_value=0.6, step=0.001, format="%.3f")
+        d["cp_cell"] = _w(st.number_input, "cp [J/kgK]", "cpcell", 950.0, min_value=700.0, max_value=1200.0, step=10.0)
+        d["k_rad"] = _w(st.slider, "Radial k_r [W/mK]", "krad", 0.9, min_value=0.3, max_value=2.0, step=0.1)
+        with st.expander("Electrical detail"):
+            d["v_max"] = _w(st.slider, "Charge V limit", "vmax", 4.2, min_value=4.0, max_value=4.4, step=0.05)
+            d["chg_mult"] = _w(st.slider, "Charge DCIR x", "chgm", 1.10, min_value=1.0, max_value=1.5, step=0.05)
+            d["v_cut"] = _w(st.slider, "CV cut-off [C]", "vcut", 0.05, min_value=0.02, max_value=0.2, step=0.01)
+            d["entropic"] = _w(st.checkbox, "Entropic heat", "entro", True)
+        d["Ns"] = _w(st.number_input, "Series (S)", "Ns", 108, min_value=1, max_value=300)
+        d["Np"] = _w(st.number_input, "Parallel (P)", "Np", 10, min_value=1, max_value=60)
+        with st.popover("Suggest S x P"):
+            tE = st.number_input("Target kWh", 1.0, 200.0, 20.0, 0.5)
+            tV = st.number_input("Target V", 48.0, 900.0, 400.0, 10.0)
+            if st.button("Apply suggestion"):
+                vn = st.session_state.get("w_vnom", 3.7); cp_ = st.session_state.get("w_cap", 5.0)
+                ns = max(int(round(tV / vn)), 1)
+                st.session_state["w_Ns"] = ns
+                st.session_state["w_Np"] = max(int(round(tE*1000/(ns*vn*cp_))), 1)
+                st.rerun()
+    with c2, st.container(border=True):
+        st.markdown("##### Layout and coolant")
+        d["arrangement"] = _w(st.radio, "Arrangement", "arr", "Square",
+                              options=["Square", "Hexagonal"], horizontal=True)
+        d["pitch"] = _w(st.slider, "Cell pitch [mm]", "pitch", 27.0, min_value=22.0, max_value=60.0, step=0.5) / 1000
+        d["edge_margin"] = _w(st.slider, "Edge margin [mm]", "edge", 10.0, min_value=5.0, max_value=40.0, step=1.0) / 1000
+        d["tube_zone"] = _w(st.slider, "Tube zone height [mm]", "tz", 35.0, min_value=15.0, max_value=80.0, step=1.0) / 1000
+        d["gas_gap"] = _w(st.slider, "Headspace [mm]", "gas", 10.0, min_value=0.0, max_value=40.0, step=1.0) / 1000
+        d["end_fraction"] = _w(st.slider, "End-caps wetted", "ends", 0.0, min_value=0.0, max_value=1.0, step=0.1)
+        names = list(cool_df["name"])
+        d["coolant"] = _w(st.selectbox, "Fluid", "fluid",
+                          "MIVOLT DF7" if "MIVOLT DF7" in names else names[0], options=names)
+        d["u_oil"] = _w(st.slider, "Stirring [m/s]", "uoil", 0.0, min_value=0.0, max_value=0.20, step=0.005,
+                        help="The larger of this and the predicted thermosiphon is used.")
+        with st.expander("Holders"):
+            d["m_holder_g"] = _w(st.slider, "Holder mass [g/cell]", "mhold", 8.0, min_value=0.0, max_value=25.0, step=1.0)
+            d["holder_block"] = _w(st.slider, "Gap-flow blockage", "hblk", 0.20, min_value=0.0, max_value=0.6, step=0.05)
+    with c3, st.container(border=True):
+        st.markdown("##### Heat exchanger, water and structure")
+        d["n_tubes"] = _w(st.slider, "Tubes", "ntub", 16, min_value=1, max_value=60)
+        d["tube_od"] = _w(st.slider, "Tube OD [mm]", "tod", 10.0, min_value=4.0, max_value=25.0, step=0.5) / 1000
+        d["tube_wall"] = _w(st.slider, "Wall [mm]", "twall", 1.0, min_value=0.5, max_value=3.0, step=0.25) / 1000
+        d["tube_mat"] = _w(st.selectbox, "Tube material", "tmat", "Copper", options=list(K_TUBE))
+        d["passes"] = _w(st.slider, "Passes", "pass", 1, min_value=1, max_value=4)
+        d["tube_plane"] = _w(st.selectbox, "Tube plane", "tplane", "Top of pack",
+                             options=["Top of pack", "Interstitial (between rows)",
+                                      "Mid-height", "Below the cells"])
+        d["fins_on"] = _w(st.checkbox, "Annular fins", "fins", True)
+        if d["fins_on"]:
+            d["fin_h"] = _w(st.slider, "Fin height [mm]", "finh", 8.0, min_value=2.0, max_value=20.0, step=0.5) / 1000
+            d["fin_t"] = _w(st.slider, "Fin thickness [mm]", "fint", 0.5, min_value=0.2, max_value=1.5, step=0.1) / 1000
+            d["fin_p"] = _w(st.slider, "Fin pitch [mm]", "finp", 4.0, min_value=2.0, max_value=12.0, step=0.5) / 1000
+            d["fin_mat"] = _w(st.selectbox, "Fin material", "finm", "Aluminium", options=["Aluminium", "Copper"])
+        d["loop_fluid"] = _w(st.selectbox, "Water loop fluid", "loopf", "Water", options=list(WATER_LOOP))
+        d["flow_lpm"] = _w(st.slider, "Flow [L/min]", "flow", 10.0, min_value=0.5, max_value=60.0, step=0.5)
+        d["T_water_in"] = _w(st.slider, "Inlet T [degC]", "twin", 20.0, min_value=0.0, max_value=40.0, step=1.0)
+        with st.expander("Structure and busbars"):
+            d["R_bus"] = _w(st.number_input, "Busbar R [mOhm] (0=auto)", "rbus", 0.0, min_value=0.0, max_value=20.0, step=0.1)
+            d["bus_J"] = _w(st.slider, "Busbar J [A/mm2]", "busj", 5.0, min_value=2.0, max_value=10.0, step=0.5)
+            d["sigma_MPa"] = _w(st.slider, "Allowable stress [MPa]", "sigma", 80.0, min_value=30.0, max_value=200.0, step=5.0)
+            d["stiff"] = _w(st.slider, "Stiffening knock-down", "stiff", 0.45, min_value=0.2, max_value=1.0, step=0.05)
+            d["p_des_bar"] = _w(st.slider, "Design pressure [bar g]", "pdes", 0.5, min_value=0.1, max_value=2.0, step=0.1)
+    return d
+
+def duty_inputs() -> dict:
+    d = {}
+    d["duty"] = _w(st.selectbox, "Duty profile", "duty", "Constant C",
+                   options=["Constant C", "Drive cycle", "Charge (CC-CV)",
+                            "Cycling (dis/chg x N)", "Fast charge then rest",
+                            "Pulse train", "CSV upload"])
+    d["C1"] = _w(st.slider, "C-rate (primary / discharge)", "c1", 2.0, min_value=0.2, max_value=8.0, step=0.1)
+    if d["duty"] == "Constant C":
+        d["dirn"] = _w(st.radio, "Direction", "dirn", "Discharge",
+                       options=["Discharge", "Charge"], horizontal=True)
+        d["track_soc"] = _w(st.checkbox, "Track SoC (off = thermal-only)", "tsoc", False)
+    if d["duty"] == "Drive cycle":
+        d["cycle"] = _w(st.selectbox, "Cycle", "cycle", "WLTP Class 3b", options=list(DRIVE_CYCLES),
+                        help="Breakpoint profiles scaled to official distance; CSV upload for 1 Hz traces.")
+        d["repeat_cyc"] = _w(st.checkbox, "Repeat to fill simulation", "repcyc", True)
+        with st.expander("Vehicle"):
+            d["veh_m"] = _w(st.number_input, "Mass [kg]", "vehm", 1900.0, min_value=600.0, max_value=4000.0, step=50.0)
+            d["CdA"] = _w(st.number_input, "Cd x A [m2]", "cda", 0.62, min_value=0.3, max_value=1.5, step=0.01)
+            d["Crr"] = _w(st.number_input, "Crr", "crr", 0.009, min_value=0.005, max_value=0.02, step=0.001, format="%.3f")
+            d["eta_dt"] = _w(st.slider, "Drivetrain eff.", "etad", 0.92, min_value=0.7, max_value=0.98, step=0.01)
+            d["eta_rg"] = _w(st.slider, "Regen recovery", "etar", 0.65, min_value=0.0, max_value=0.95, step=0.05)
+            d["P_rg"] = _w(st.slider, "Regen cap [kW]", "prg", 60.0, min_value=0.0, max_value=300.0, step=5.0)
+            d["P_acc"] = _w(st.number_input, "Accessories [W]", "pacc", 500.0, min_value=0.0, max_value=5000.0, step=50.0)
+    if d["duty"] == "Cycling (dis/chg x N)":
+        d["n_cyc"] = _w(st.slider, "Cycles", "ncyc", 3, min_value=1, max_value=10)
+        d["cyc_rest"] = _w(st.slider, "Rest [s]", "crest", 600.0, min_value=0.0, max_value=3600.0, step=60.0)
+        d["soc_min"] = _w(st.slider, "Discharge to SoC", "socmin", 0.10, min_value=0.0, max_value=0.5, step=0.05)
+    if d["duty"] in ("Fast charge then rest", "Pulse train"):
+        d["t1"] = _w(st.slider, "Primary phase [s]", "t1", 900.0, min_value=60.0, max_value=3600.0, step=30.0)
+    if d["duty"] == "Pulse train":
+        d["C2"] = _w(st.slider, "C-rate (secondary)", "c2", 0.5, min_value=0.0, max_value=4.0, step=0.1)
+        d["t2"] = _w(st.slider, "Secondary phase [s]", "t2", 600.0, min_value=30.0, max_value=3600.0, step=30.0)
+    if d["duty"] == "CSV upload":
+        dup = st.file_uploader("Duty CSV: t_s and C (or P_kW)", type="csv", key="duty_up")
+        if dup is not None:
+            try:
+                probe = dict(DEFAULTS)
+                probe.update({k: st.session_state.get(f"w_{k2}", probe[k]) for k, k2 in
+                              [("Ns", "Ns"), ("Np", "Np"), ("v_nom", "vnom"), ("cap_Ah", "cap")]})
+                st.session_state["duty_csv"] = duty_from_csv(dup, probe)
+                tt, cc = st.session_state["duty_csv"]
+                st.caption(f"{len(tt)} points, {tt[-1]:.0f} s, peak {cc.max():.1f}C.")
+            except Exception as e:
+                st.error(f"Could not parse: {e}")
+    if d["duty"] in ("Charge (CC-CV)", "Cycling (dis/chg x N)", "Drive cycle"):
+        d["C_chg"] = _w(st.slider, "Charge rating (CC) [C]", "cchg", 1.0, min_value=0.2, max_value=4.0, step=0.1,
+                        help="Plating map derates below 25 degC; also caps regen.")
+        d["soc0"] = _w(st.slider, "Start SoC", "soc0", 0.90 if d["duty"] != "Charge (CC-CV)" else 0.20,
+                       min_value=0.0, max_value=1.0, step=0.05)
+    st.markdown("---")
+    d["duration"] = _w(st.slider, "Simulation length [s]", "dur", 3600.0, min_value=300.0, max_value=14400.0, step=300.0)
+    d["T_start"] = _w(st.slider, "Start temperature [degC]", "tstart", 25.0, min_value=-10.0, max_value=45.0, step=1.0)
+    d["T_limit"] = _w(st.slider, "Cell limit [degC]", "tlim", 45.0, min_value=35.0, max_value=60.0, step=1.0)
+    d["limit_core"] = _w(st.checkbox, "Apply limit to core", "limcore", False)
+    d["T_amb"] = _w(st.slider, "Ambient [degC]", "tamb", 25.0, min_value=-10.0, max_value=45.0, step=1.0)
+    return d
+
+# ------------------------------------------------------------------ #
+#  v4 main: workbench                                                 #
+# ------------------------------------------------------------------ #
+def main():
+    st.set_page_config(page_title="Immersion Pack Lab", layout="wide", page_icon=None)
+    st.markdown(CSS, unsafe_allow_html=True)
+    st.title("Immersion Pack Lab")
+    kpi_box = st.container()
+
+    if "cool_df" not in st.session_state:
+        st.session_state.cool_df = _read_coolants()
+    cool_df = st.session_state.cool_df
+
+    tabs = st.tabs(["1 Design", "2 Duty", "3 Results", "4 Improve", "5 Safety",
+                    "6 Compare", "7 Learn", "8 Validate and tune"])
+
+    with tabs[0]:
+        st.caption("Define the pack. The status bar above and the 3D view below update live.")
+        d = dict(DEFAULTS)
+        d.update(design_inputs(cool_df))
+    with tabs[1]:
+        cduty, cplot = st.columns([1, 1.4], gap="large")
+        with cduty:
+            st.caption("What you ask of the pack. Steady state uses the duty's RMS C-rate.")
+            d.update(duty_inputs())
+    # model-tuning keys (widgets live in tab 8, read here pre-compute)
+    for key, wkey in [("cal_h", "cal_h"), ("K_loop", "kloop"), ("h_ext", "hext"),
+                      ("bottom_gap", "bgap"), ("manifold_margin", "mman"),
+                      ("T_service_max", "tserv")]:
+        default = DEFAULTS[key]
+        v = st.session_state.get(f"w_{wkey}", default * (1000 if key in
+                                 ("bottom_gap", "manifold_margin") else 1))
+        d[key] = v / 1000 if key in ("bottom_gap", "manifold_margin") else v
+
+    # ---------------- compute ---------------- #
+    fl = fluid_dict(cool_df[cool_df["name"] == d["coolant"]].iloc[0])
+    g = build_geometry(d)
+    res0 = solve_steady(d, g, fl, 1.0, d["T_amb"], C_rate=d["C1"])
+    masses = build_masses(d, g, fl, res0["fin"])
+    Cmax = max_continuous_C(d, g, fl, d["T_amb"], d["T_limit"])
+    if d["duty"] == "Drive cycle":
+        tc, vc, D_km = cycle_speed(d["cycle"])
+        if d["repeat_cyc"] and tc[-1] < d["duration"]:
+            reps = int(math.ceil(d["duration"] / tc[-1]))
+            vc = np.tile(vc, reps)[: int(d["duration"]) + 1]
+            tc = np.arange(0.0, len(vc), 1.0)
+        spec = dict(kind="P", t=tc, P=vehicle_battery_power(tc, vc, d), v=vc, D_km=D_km)
+    elif d["duty"] == "Charge (CC-CV)":
+        spec = dict(kind="chg", t=np.arange(0.0, d["duration"] + 1e-9, 2.0))
+    elif d["duty"] == "Cycling (dis/chg x N)":
+        spec = dict(kind="cyc", t=np.arange(0.0, d["duration"] + 1e-9, 2.0))
+    else:
+        csv_tc = st.session_state.get("duty_csv") if d["duty"] == "CSV upload" else None
+        t0, C0 = duty_profile(d["duty"], d["duration"], d["C1"], d["t1"], d["C2"],
+                              d["t2"], csv_tc)
+        spec = dict(kind="C", t=t0, C=C0)
+    tr = simulate_pack(d, g, fl, masses, d["T_amb"], spec)
+    t_arr, C_arr = tr["t"], tr["C"]
+    C_steady = max(tr["C_rms"], 0.05)
+    res = solve_steady(d, g, fl, 1.0, d["T_amb"], C_rate=C_steady)
+    Q_duty = res["Q_eff"]
+    loop = WATER_LOOP[d["loop_fluid"]]
+    P_pump = water_pump_power(d, g, loop)["P"]
+    P_stir = stirrer_power(d, g, fl, d["u_oil"])
+
+    # ---------------- KPI strip ---------------- #
+    with kpi_box:
+        k1, k2, k3, k4, k5, k6 = st.columns(6)
+        k1.metric("Pack", f"{masses['E_kwh']:.1f} kWh / {d['Ns']*d['v_nom']:.0f} V",
+                  f"{g['N']} x {d['fmt']}")
+        k2.metric(f"Can / core at {C_steady:.2f}C rms",
+                  f"{res['T_b']:.1f} / {res['T_core']:.1f}",
+                  f"{(res['T_core'] if d['limit_core'] else res['T_b'])-d['T_limit']:+.1f} vs limit",
+                  delta_color="inverse")
+        k3.metric("Max continuous", f"{Cmax:.2f} C", f"to {d['T_limit']:.0f} degC")
+        k4.metric("Heat at duty", f"{Q_duty/1000:.2f} kW",
+                  f"parasitic {P_pump+P_stir:.0f} W")
+        k5.metric("Coolant", f"{masses['V_oil_L']:.0f} L", f"{masses['m_oil']:.0f} kg")
+        k6.metric("Mass", f"{masses['m_pack']:.0f} kg",
+                  f"{masses['whkg_pack']:.0f} Wh/kg | {masses['whl_pack']:.0f} Wh/L")
+
+    # ---------------- sidebar: status, save/load, report ---------------- #
+    sb = st.sidebar
+    sb.markdown("### Design status")
+    ok = (res["T_core"] if d["limit_core"] else res["T_b"]) <= d["T_limit"]
+    sb.markdown(f"{'##### Within limit' if ok else '##### OVER LIMIT'}  \n"
+                f"{res['T_b']:.1f} degC at {C_steady:.2f}C rms vs {d['T_limit']:.0f} limit  \n"
+                f"Thermosiphon {res['u_ts']*1000:.1f} mm/s, spread {res['spread']:.1f} K  \n"
+                f"Fluid: {fl['name']}")
+    if not ok:
+        sb.error("Over limit - see Improve tab.")
+    sb.markdown("---")
+    with sb.expander("Save / load design"):
+        state = {k: v for k, v in st.session_state.items()
+                 if k.startswith("w_") and isinstance(v, (int, float, str, bool))}
+        st.download_button("Download design (.json)", data=pd.Series(state).to_json(),
+                           file_name="pack_design.json", use_container_width=True)
+        up = st.file_uploader("Load design", type="json", key="design_up")
+        if up is not None:
+            sig = up.name + str(up.size)
+            if st.session_state.get("applied_design") != sig:
+                for k, v in pd.read_json(up, typ="series").to_dict().items():
+                    if k.startswith("w_"):
+                        st.session_state[k] = v
+                st.session_state["applied_design"] = sig
+                st.rerun()
+    sb.download_button("Design report (.html)",
+                       data=report_html(d, g, fl, res, masses, Cmax, []),
+                       file_name="pack_design_report.html", mime="text/html",
+                       use_container_width=True)
+    sb.caption("Wang et al. 2023 benchmark: 33.0 vs 32.3 degC. Oil-side h honest to "
+               "+/-30% until calibrated (tab 8).")
+
+    # ---------------- Design tab: 3D / plan view ---------------- #
+    with tabs[0]:
+        st.markdown("---")
+        vleft, vright = st.columns([3, 1])
+        with vright:
+            view = st.radio("View", ["3D", "Plan"], horizontal=True)
+            s_oil = st.checkbox("Oil fill", True)
+            s_tub = st.checkbox("Tubes", True)
+            s_fin = st.checkbox("Fin envelopes", True)
+            s_box = st.checkbox("Enclosure", True)
+            st.caption(f"Box {g['Lx']*1000:.0f} x {g['Ly']*1000:.0f} x {g['Lz']*1000:.0f} mm, "
+                       f"gap {g['gap_mm']:.1f} mm, enclosure wall "
+                       f"{masses['enc']['t_mm']:.1f} mm eff. Fins drawn as translucent "
+                       "envelopes (true pitch {:.0f}/m).".format(1/d['fin_p'] if d['fins_on'] else 0))
+        with vleft:
+            if view == "3D":
+                st.plotly_chart(pack_3d_figure(d, g, s_oil, s_tub, s_box, s_fin),
+                                use_container_width=True)
+            else:
+                st.plotly_chart(layout_figure(d, g), use_container_width=True)
+
+    # ---------------- Duty tab: response ---------------- #
+    with tabs[1]:
+        with cplot:
+            if spec["kind"] == "P":
+                figV = go.Figure(go.Scatter(x=spec["t"]/60, y=spec["v"]*3.6,
+                                            line=dict(color="#4A6FA5", width=2)))
+                figV.update_layout(height=200, margin=dict(l=10, r=10, t=30, b=10),
+                                   title=f"{d['cycle']} speed trace",
+                                   xaxis_title="min", yaxis_title="km/h",
+                                   plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)")
+                st.plotly_chart(figV, use_container_width=True)
+            band = st.checkbox("Show +/-30% oil-film band", False)
+            figT = go.Figure()
+            if band:
+                trs = []
+                for cf in (0.7, 1.3):
+                    dd = dict(d); dd["cal_h"] = d["cal_h"] * cf
+                    trs.append(simulate_pack(dd, g, fl, masses, d["T_amb"], spec))
+                figT.add_trace(go.Scatter(
+                    x=np.concatenate([tr["t"], tr["t"][::-1]])/60,
+                    y=np.concatenate([trs[0]["T_b"], trs[1]["T_b"][::-1]]),
+                    fill="toself", fillcolor="rgba(192,57,43,0.12)",
+                    line=dict(width=0), name="h +/-30%", hoverinfo="skip"))
+            figT.add_trace(go.Scatter(x=tr["t"]/60, y=tr["T_core"], name="Core",
+                                      line=dict(color="#7A1F1F", width=2, dash="dot")))
+            figT.add_trace(go.Scatter(x=tr["t"]/60, y=tr["T_b"], name="Cell surface",
+                                      line=dict(color="#C0392B", width=3)))
+            figT.add_trace(go.Scatter(x=tr["t"]/60, y=tr["T_il"], name="Bulk oil",
+                                      line=dict(color=ACCENT, width=3)))
+            figT.add_hline(y=d["T_limit"], line_dash="dash", line_color="#7A1F1F")
+            figT.add_trace(go.Scatter(x=t_arr/60, y=C_arr, name="C-rate", yaxis="y2",
+                                      line=dict(color="#9AA5AF", dash="dot")))
+            if d["duty"] != "Constant C" or d.get("track_soc"):
+                figT.add_trace(go.Scatter(x=tr["t"]/60, y=tr["soc"]*4, yaxis="y2",
+                                          name="SoC (x4)", line=dict(color="#2E7D52", width=2)))
+            figT.update_layout(height=380, xaxis_title="Time [min]",
+                               yaxis_title="Temperature [degC]",
+                               yaxis2=dict(title="C / SoCx4", overlaying="y", side="right",
+                                           showgrid=False,
+                                           range=[min(0, float(C_arr.min())*1.2),
+                                                  max(float(np.abs(C_arr).max())*1.6, 4.2)]),
+                               plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)",
+                               legend=dict(orientation="h", y=1.14),
+                               margin=dict(l=10, r=10, t=10, b=10))
+            st.plotly_chart(figT, use_container_width=True)
+            if spec["kind"] == "P":
+                st.caption(f"Official distance {spec['D_km']:.2f} km/cycle; peak "
+                           f"{tr['C'].max():.2f}C / regen {-tr['C'].min():.2f}C; "
+                           f"C_rms {tr['C_rms']:.2f}; SoC {tr['soc'][0]*100:.0f} -> "
+                           f"{tr['soc'][-1]*100:.0f}%.")
+            elif spec["kind"] in ("chg", "cyc"):
+                st.caption(f"SoC {tr['soc'][0]*100:.0f} -> {tr['soc'][-1]*100:.0f}%; peak "
+                           f"charge {-tr['C'].min():.2f}C (plating-derated); cycles "
+                           f"{tr['cycles_done']}.")
+
+    # ---------------- Results ---------------- #
+    with tabs[2]:
+        st.plotly_chart(chain_schematic(res, Q_duty), use_container_width=True)
+        c1, c2 = st.columns([1.1, 1])
+        with c1:
+            figR, worst = resistance_chart(res)
+            st.plotly_chart(figR, use_container_width=True)
+            st.markdown(f"<p class='small-note'>Ambient leak R = {res['R_atm']:.2f} K/W "
+                        f"carrying {res['Q_atm']:.0f} W of {Q_duty:.0f} W. Water pump "
+                        f"{P_pump:.1f} W"
+                        + (f", stirrer {P_stir:.1f} W" if P_stir > 0 else "")
+                        + f". Busbars add {(tr['bus']['R']*1e3):.2f} mOhm.</p>",
+                        unsafe_allow_html=True)
+        with c2:
+            st.plotly_chart(waterfall_chart(res, Q_duty, d), use_container_width=True)
+        c3, c4 = st.columns(2)
+        with c3:
+            st.markdown("**Film coefficients and regimes**")
+            hdf = pd.DataFrame([
+                ["Cell surface (oil)", f"{res['h_cell']:.0f}",
+                 f"nat {res['h_cell_nat']:.0f} / flow {res['h_cell_for']:.0f}",
+                 f"Ra = {res['Ra_cell']:.2e}, gap factor {res['gapf']:.2f}"],
+                ["Tube outside (oil)", f"{res['h_tube']:.0f}",
+                 f"nat {res['h_tube_nat']:.0f} / flow {res['h_tube_for']:.0f}",
+                 f"fin eff {res['fin']['eta']:.2f}, area x{res['fin']['area_gain']:.1f}"],
+                ["Tube inside (water)", f"{res['h_water']:.0f}",
+                 res["water_regime"], f"Re = {res['Re_water']:.0f}"],
+            ], columns=["Interface", "h [W/m2K]", "Split / regime", "Detail"])
+            st.dataframe(hdf, hide_index=True, use_container_width=True)
+            st.markdown(f"<p class='small-note'>Thermosiphon {res['u_ts']*1000:.1f} mm/s; "
+                        f"calibration {d['cal_h']:.2f}; water rise {res['dT_water']:.1f} K; "
+                        f"HX area {res['A_oilside']:.2f} vs cell {g['A_cells']:.2f} m2.</p>",
+                        unsafe_allow_html=True)
+        with c4:
+            st.markdown("**Mass and packaging audit**")
+            mdf2 = pd.DataFrame([
+                ["Cells", masses["m_cells"]], ["Coolant", masses["m_oil"]],
+                ["Tubes", masses["m_tubes"]], ["Fins", masses["m_fins"]],
+                ["Busbars", masses["m_bus"]], ["Cell holders", masses["m_holders"]],
+                [f"Enclosure ({masses['enc']['t_mm']:.1f} mm eff.)", masses["m_struct"]],
+            ], columns=["Item", "kg"])
+            mdf2["% of pack"] = 100 * mdf2["kg"] / masses["m_pack"]
+            st.dataframe(mdf2.round(1), hide_index=True, use_container_width=True)
+            st.markdown(f"<p class='small-note'>Worst cell ~{res['T_worst']:.1f} degC, best "
+                        f"~{res['T_best']:.1f} (spread {res['spread']:.1f} K vs 5 K "
+                        f"criterion). Buffer {(masses['C_oil']+masses['C_batt'])/1000:.0f} "
+                        f"kJ/K. AMG HPB80 reference: 68.5 Wh/kg.</p>",
+                        unsafe_allow_html=True)
+
+    # ---------------- Improve ---------------- #
+    with tabs[3]:
+        cpin1, cpin2, _sp = st.columns([1, 1, 4])
+        summary = dict(Fluid=fl["name"], T_can=round(res["T_b"], 1),
+                       T_core=round(res["T_core"], 1), Cmax=round(Cmax, 2),
+                       Spread_K=round(res["spread"], 1), Pack_kg=round(masses["m_pack"]),
+                       Whkg=round(masses["whkg_pack"]), WhL=round(masses["whl_pack"]),
+                       Parasitic_W=round(P_pump + P_stir, 1), Tubes=d["n_tubes"],
+                       Flow_lpm=d["flow_lpm"], Stir=d["u_oil"])
+        if cpin1.button("Pin design as A"):
+            st.session_state["pinned"] = summary
+        if "pinned" in st.session_state and cpin2.button("Clear pin"):
+            del st.session_state["pinned"]
+        if "pinned" in st.session_state:
+            st.dataframe(pd.DataFrame([st.session_state["pinned"], summary],
+                                      index=["A (pinned)", "B (current)"]),
+                         use_container_width=True)
+        improve_core(d, g, fl, masses, res, Q_duty, C_steady, cool_df)
+
+    # ---------------- Safety ---------------- #
+    with tabs[4]:
+        st.markdown("Order-of-magnitude screening plus the engineering checklist. "
+                    "Nothing here replaces abuse testing.")
+        runaway_ui(d, g, fl, masses, res)
+        exp_L = fl["beta"] * masses["V_oil_L"] * (d["T_service_max"] - 0.0)
+        st.markdown(f"""
+**Expansion and leaks.**
+* Oil expansion over a 0 to {d['T_service_max']:.0f} degC service band:
+  **~{exp_L:.1f} L** on {masses['V_oil_L']:.0f} L - bellows or bladder, never free air.
+* Hold **oil pressure above water pressure** so any tube leak goes oil-to-water
+  (transformer practice); or double-walled tubes with interstitial leak detection.
+* Burst disc set at {d['p_des_bar']:.1f} bar g (the enclosure is sized for this in
+  Design); route the vent away from occupants and expect oil ejection.
+* Ester fluids: monitor moisture; copper: use inhibited oil or plated tubes.""")
+
+    # ---------------- Compare ---------------- #
+    with tabs[5]:
+        st.subheader("Architectures")
+        arch_tab(d, g, fl, masses, C_steady)
+        st.markdown("---")
+        st.subheader("Coolant shoot-out")
+        coolant_tab(d, g, cool_df)
+        st.markdown("---")
+        st.subheader("Production packs")
+        bench_prod_tab(masses, Cmax)
+
+    # ---------------- Learn ---------------- #
+    with tabs[6]:
+        learn_tab(d, g, fl, res, masses, cool_df, loop)
+
+    # ---------------- Validate and tune ---------------- #
+    with tabs[7]:
+        st.subheader("Benchmark: Wang et al. 2023")
+        bench_wang_tab()
+        st.markdown("---")
+        st.subheader("Calibrate to your rig")
+        mup = st.file_uploader("Measured CSV: columns t_s, T_cell", type="csv", key="meas_up")
+        if mup is not None:
+            try:
+                mdf = pd.read_csv(mup)
+                cols = {c.lower().strip(): c for c in mdf.columns}
+                st.session_state["meas_data"] = (
+                    mdf[cols["t_s"]].to_numpy(float), mdf[cols["t_cell"]].to_numpy(float))
+                st.success(f"Loaded {len(mdf)} points.")
+            except Exception as e:
+                st.error(f"Could not parse: {e}")
+        meas = st.session_state.get("meas_data")
+        if meas is not None:
+            figM = go.Figure()
+            figM.add_trace(go.Scatter(x=tr["t"]/60, y=tr["T_b"], name="Model",
+                                      line=dict(color="#C0392B", width=3)))
+            figM.add_trace(go.Scatter(x=meas[0]/60, y=meas[1], mode="markers",
+                                      name="Measured", marker=dict(color=INK, size=5)))
+            figM.update_layout(height=300, xaxis_title="min", yaxis_title="degC",
+                               plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(figM, use_container_width=True)
+            if st.button("Fit oil-film calibration factor"):
+                with st.spinner("Sweeping 0.4-2.2..."):
+                    cb, rm = fit_calibration(d, g, fl, masses, d["T_amb"],
+                                             tr["t"], np.abs(tr["C"]), meas[0], meas[1])
+                st.session_state["w_cal_h"] = cb
+                st.success(f"cal_h = {cb:.2f} (RMSE {rm:.2f} K) - applied below.")
+                st.rerun()
+        st.markdown("---")
+        st.subheader("Model tuning")
+        t1_, t2_, t3_ = st.columns(3)
+        with t1_:
+            _w(st.slider, "Oil-film calibration factor", "cal_h", 1.0, min_value=0.4, max_value=2.2, step=0.01)
+            _w(st.slider, "Thermosiphon minor-loss K", "kloop", 5.0, min_value=0.0, max_value=20.0, step=0.5)
+        with t2_:
+            _w(st.slider, "Casing-to-ambient h [W/m2K]", "hext", 5.0, min_value=0.0, max_value=25.0, step=0.5)
+            _w(st.slider, "Gap under cells [mm]", "bgap", 5.0, min_value=0.0, max_value=20.0, step=1.0)
+        with t3_:
+            _w(st.slider, "Manifold margin [mm]", "mman", 20.0, min_value=0.0, max_value=60.0, step=5.0)
+            _w(st.slider, "Max service T (expansion) [degC]", "tserv", 60.0, min_value=40.0, max_value=90.0, step=5.0)
+        if st.checkbox("Edit fluid property table", False):
+            st.session_state.cool_df = st.data_editor(cool_df, num_rows="dynamic", height=260)
+        st.caption("These knobs change the physics for every tab. cal_h multiplies both "
+                   "oil films; fit it above once rig data exists (spray-app pattern).")
 
 if __name__ == "__main__":
     if os.environ.get("SMOKE"):

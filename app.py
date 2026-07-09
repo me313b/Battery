@@ -973,13 +973,19 @@ def coolant_tab(d, g, cool_df):
         sdf = pd.DataFrame(rows).sort_values("T_cell")
         st.dataframe(sdf.round(1), hide_index=True, use_container_width=True, height=420)
         figS = go.Figure()
+        lab_all = thin_labels(sdf["oil_kg"], -sdf["T_cell"], list(sdf["Fluid"]),
+                              min_dx=0.06, min_dy=0.10)   # favour the coolest
+        lab_map = dict(zip(sdf["Fluid"], lab_all))
         for fam, grp in sdf.groupby("Family"):
             figS.add_trace(go.Scatter(x=grp["oil_kg"], y=grp["T_cell"], mode="markers+text",
-                                      text=grp["Fluid"], textposition="top center", name=fam,
+                                      text=[lab_map[f] for f in grp["Fluid"]],
+                                      hovertext=grp["Fluid"], hoverinfo="text+x+y",
+                                      textposition="top center", name=fam,
+                                      textfont=dict(size=11),
                                       marker=dict(size=9 + 40 * grp["k"] / sdf["k"].max())))
         figS.add_hline(y=d["T_limit"], line_dash="dash", line_color="#7A1F1F")
         figS.update_layout(height=460, title="Cooler is down, lighter is left "
-                           "(marker size ~ conductivity)",
+                           "(size ~ conductivity; hover for every fluid)",
                            xaxis_title="Coolant mass on board [kg]",
                            yaxis_title="Steady cell temperature [degC]",
                            plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)")
@@ -1033,15 +1039,19 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop):
                 Ra3 = rayleigh(p3, 8.0, d["h_cell"])
                 ys.append(nu_vertical_cc(Ra3, p3["Pr"]) * p3["k"] / d["h_cell"])
                 xs.append(r["nu_cSt"]); names.append(r["name"]); ks.append(r["k"])
-            figV = go.Figure(go.Scatter(x=xs, y=ys, mode="markers+text", text=names,
-                                        textposition="top center",
-                                        marker=dict(size=8 + 60 * np.array(ks) / max(ks),
-                                                    color=ks, colorscale="YlOrBr",
-                                                    colorbar=dict(title="k [W/mK]"))))
+            figV = go.Figure(go.Scatter(
+                x=xs, y=ys, mode="markers+text",
+                text=thin_labels(xs, ys, names, logx=True),
+                hovertext=names, hoverinfo="text+x+y",
+                textposition="top center", textfont=dict(size=11),
+                marker=dict(size=8 + 60 * np.array(ks) / max(ks),
+                            color=ks, colorscale="YlOrBr",
+                            colorbar=dict(title="k [W/mK]"))))
             figV.update_layout(height=430, xaxis_type="log",
                                xaxis_title="Kinematic viscosity at 25 degC [cSt] (log)",
                                yaxis_title="Natural-convection h on a 21700 [W/m2K]",
-                               title="Ra ~ 1/nu, h ~ Ra^(1/4-1/6): viscosity is the strong axis",
+                               title="Ra ~ 1/nu, h ~ Ra^(1/4-1/6): viscosity is the strong "
+                                     "axis (hover for every fluid)",
                                plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)")
             st.plotly_chart(figV, use_container_width=True)
             st.caption("This reproduces Wang et al.'s HFE7100 result: 1% of the viscosity "
@@ -1868,6 +1878,22 @@ def pack_3d_figure(d, g, show_oil=True, show_tubes=True, show_box=True,
               f"({d['tube_plane'].lower()}), oil to {g['fill_h']*1000:.0f} mm")
     return fig
 
+
+def thin_labels(xs, ys, names, logx=False, min_dx=0.10, min_dy=0.12):
+    """Keep a label only if it does not crowd an already-kept one; everything
+    remains identifiable on hover. Distances are fractions of axis span
+    (log10 span when logx)."""
+    xs = np.asarray(xs, float); ys = np.asarray(ys, float)
+    xv = np.log10(np.maximum(xs, 1e-9)) if logx else xs
+    xspan = max(xv.max() - xv.min(), 1e-9); yspan = max(ys.max() - ys.min(), 1e-9)
+    order = np.argsort(-ys)                      # label the notable (high) first
+    kept, out = [], [""] * len(xs)
+    for idx in order:
+        if all(abs(xv[idx] - xv[j]) / xspan > min_dx
+               or abs(ys[idx] - ys[j]) / yspan > min_dy for j in kept):
+            kept.append(idx); out[idx] = names[idx]
+    return out
+
 # ------------------------------------------------------------------ #
 #  v4: input panels (workbench layout)                                #
 # ------------------------------------------------------------------ #
@@ -1881,10 +1907,11 @@ def design_inputs(cool_df) -> dict:
                       help="Presets from teardown data; 4680 DCIR is an estimate.")
         if d["fmt"] != "Custom" and st.button(f"Apply {d['fmt']} preset"):
             f_ = FORMATS[d["fmt"]]
-            st.session_state.update(w_dcell=f_["d_cell"]*1000, w_hcell=f_["h_cell"]*1000,
-                                    w_cap=f_["cap"], w_rdc=f_["rdc"], w_mcell=f_["mcell"],
-                                    w_pitch=max(st.session_state.get("w_pitch", 27.0),
-                                                f_["d_cell"]*1000 + 6.0))
+            st.session_state["_pending"] = dict(
+                w_dcell=f_["d_cell"]*1000, w_hcell=f_["h_cell"]*1000,
+                w_cap=f_["cap"], w_rdc=f_["rdc"], w_mcell=f_["mcell"],
+                w_pitch=max(st.session_state.get("w_pitch", 27.0),
+                            f_["d_cell"]*1000 + 6.0))
             st.rerun()
         d["d_cell"] = _w(st.slider, "Diameter [mm]", "dcell", 21.0, min_value=10.0, max_value=60.0, step=0.5) / 1000
         d["h_cell"] = _w(st.slider, "Height [mm]", "hcell", 70.0, min_value=40.0, max_value=130.0, step=1.0) / 1000
@@ -1908,8 +1935,8 @@ def design_inputs(cool_df) -> dict:
             if st.button("Apply suggestion"):
                 vn = st.session_state.get("w_vnom", 3.7); cp_ = st.session_state.get("w_cap", 5.0)
                 ns = max(int(round(tV / vn)), 1)
-                st.session_state["w_Ns"] = ns
-                st.session_state["w_Np"] = max(int(round(tE*1000/(ns*vn*cp_))), 1)
+                st.session_state["_pending"] = dict(
+                    w_Ns=ns, w_Np=max(int(round(tE * 1000 / (ns * vn * cp_))), 1))
                 st.rerun()
     with c2, st.container(border=True):
         st.markdown("##### Layout and coolant")
@@ -2019,6 +2046,8 @@ def main():
     st.set_page_config(page_title="Immersion Pack Lab", layout="wide", page_icon=None)
     st.markdown(CSS, unsafe_allow_html=True)
     st.title("Immersion Pack Lab")
+    for _k, _v in st.session_state.pop("_pending", {}).items():
+        st.session_state[_k] = _v
     kpi_box = st.container()
 
     if "cool_df" not in st.session_state:
@@ -2330,7 +2359,7 @@ def main():
                 with st.spinner("Sweeping 0.4-2.2..."):
                     cb, rm = fit_calibration(d, g, fl, masses, d["T_amb"],
                                              tr["t"], np.abs(tr["C"]), meas[0], meas[1])
-                st.session_state["w_cal_h"] = cb
+                st.session_state["_pending"] = dict(w_cal_h=cb)
                 st.success(f"cal_h = {cb:.2f} (RMSE {rm:.2f} K) - applied below.")
                 st.rerun()
         st.markdown("---")

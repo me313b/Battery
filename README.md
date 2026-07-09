@@ -99,3 +99,10 @@ The 3D view renders every cell (coloured by centre-vs-edge tendency), tube
 runs with translucent fin envelopes, the oil fill level, and the enclosure;
 it follows format, pitch, tube plane (including interstitial) live.
 Old saved designs load unchanged (same widget keys).
+
+## v4.1 fixes
+Apply-suggestion / apply-preset / calibration-fit buttons now write widget
+values through a pending queue drained at the top of the script, removing the
+StreamlitAPIException (state written after widget instantiation). Fluid
+scatter charts (Learn panel 3, Coolant shoot-out) auto-thin their labels to
+avoid pile-ups; every point keeps its name on hover.

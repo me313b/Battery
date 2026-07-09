@@ -106,3 +106,20 @@ values through a pending queue drained at the top of the script, removing the
 StreamlitAPIException (state written after widget instantiation). Fluid
 scatter charts (Learn panel 3, Coolant shoot-out) auto-thin their labels to
 avoid pile-ups; every point keeps its name on hover.
+
+## v5: heat-journey Results, scale-to-C, full report tab
+Results is now the heat journey: a Sankey of where the watts go
+(cells/busbars -> oil -> water/casing -> chiller -> ambient), the
+temperature ladder and resistance ranking, then seven station cards
+(source, first film, bulk oil, finned film, wall, water, chiller) each with
+its numbers, its share of the ladder, and a quantified "how to improve this
+stage" note, closing with the water set-point trade curve (COP vs DCIR).
+A chiller model (COP = 0.45 x Carnot on the actual lift) sizes electrical
+power. Improve gains "Scale to a target C": solves the design at the target,
+tables every subsystem's required change (chiller, single-lever fixes via
+goal-seek, stirred combination, busbar resize, water regime, core, plating/
+charging), plus a heat/chiller/temperature vs C sweep chart. Tab 9 renders a
+full narrative design report (executive summary, design, heat journey, duty,
+scaling, uniformity and safety, validation - each with improvement actions
+and live figures) and exports it as standalone interactive HTML.
+Mass audit moved to Design. Sidebar simplified.

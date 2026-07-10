@@ -1,22 +1,3 @@
-# Immersion Pack Lab - complete bundle (v8.4)
-
-**Extract this whole folder and keep it together.** Launch with `./run.sh`
-(macOS/Linux) or `run.bat` (Windows), or manually:
-`streamlit run app.py` - from v8.4 the app finds its data files next to
-app.py no matter which directory you launch from.
-
-| File | Purpose |
-|---|---|
-| app.py | the application (all physics, UI, report) |
-| livepack.py | the animated Live Pack canvas component |
-| coolants.csv | dielectric fluid property library |
-| pack_benchmark.xlsx | your 58-pack BEV database (drives Compare) |
-| .streamlit/config.toml | native theme (keep the folder) |
-| requirements.txt | streamlit, plotly, pandas, numpy, openpyxl |
-| run.sh / run.bat | one-click launchers |
-
-Every file above is required. Version shows in the app header.
-
 # Immersion Pack Lab v4
 
 Parametric design and teaching app for a **static or stirred immersion-cooled
@@ -248,3 +229,16 @@ Head-to-head / Full table) shows every comparison full-size, with a green
 DATA LOADED chip confirming the source (58 packs) or, if the file is
 missing, a clear error plus an in-app upload fallback that works for the
 session. Power and Explorer views are grouped by energy class like the map.
+
+## v8.5: readable charts, compact header, gentle white theme
+Chart titles and legends no longer collide: the global template puts every
+title top-left and every horizontal legend top-right on its own band with
+extra headroom, applied to all charts at once. The Ideas comparison puts
+pump power on its own right-hand axis so half-watt bars are actually
+visible. The oversized banner and the KPI card row are merged into one
+compact header band (title, version, status chip, and seven small stats in
+two lines). Background is now pure white with a gentler palette: softer
+indigo/sky brand, lighter borders and shadows, calmer hero gradient, and a
+matching .streamlit theme. The sticky live design panel gains stronger CSS
+(column-level :has() selectors, overflow fixes, self-scrolling) so it stays
+on screen while scrolling across more Streamlit builds.

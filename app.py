@@ -19,7 +19,7 @@
 
 import os, math, contextlib
 
-APP_VERSION = "v8.4"
+APP_VERSION = "v8.5"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import numpy as np
@@ -35,14 +35,16 @@ from livepack import live_pack_html
 pio.templates["packlab"] = go.layout.Template(layout=dict(
     font=dict(family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif",
               size=13, color="#334155"),
-    title=dict(font=dict(size=15, color="#0F172A")),
+    title=dict(font=dict(size=15, color="#0F172A"), x=0.01,
+               xanchor="left", y=0.985, yanchor="top"),
+    legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right",
+                x=1.0, bgcolor="rgba(0,0,0,0)", font=dict(size=11.5)),
     paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
     colorway=["#6366F1", "#06B6D4", "#F59E0B", "#EF4444", "#10B981",
               "#8B5CF6", "#64748B"],
     xaxis=dict(gridcolor="#EEF2F7", zerolinecolor="#E2E8F0", linecolor="#E2E8F0"),
     yaxis=dict(gridcolor="#EEF2F7", zerolinecolor="#E2E8F0", linecolor="#E2E8F0"),
-    legend=dict(bgcolor="rgba(0,0,0,0)"),
-    margin=dict(l=20, r=20, t=48, b=20)))
+    margin=dict(l=20, r=20, t=64, b=20)))
 pio.templates.default = "packlab" 
 
 G = 9.81
@@ -55,8 +57,8 @@ KELVIN = 273.15
 FALLBACK_CSV = """name,family,k,rho,cp,nu_cSt,beta,B_visc,bp_C,flash_C,dielectric,bdv_kV,notes,review
 Transformer oil,Mineral hydrocarbon,0.13,875,1900,9.8,0.00075,3200,280,150,True,50,Baseline mineral oil,
 MIVOLT DF7,Dielectric ester,0.13,900,2000,7.0,0.00075,3200,250,170,True,50,Low-viscosity EV ester,
-Novec 7100 (HFE-7100),Hydrofluoroether,0.069,1510,1180,0.38,0.0015,1500,61,,True,28,Fluorinated reference,
-Deionized water,Water,0.6,997,4180,0.89,0.00026,1900,100,,False,,Thermal reference only,
+Novec 7100 (HFE-7100),Hydrofluoroether,0.069,1510,1180,0.38,0.0015,1500,61,True,28,Fluorinated reference,
+Deionized water,Water,0.6,997,4180,0.89,0.00026,1900,100,False,Thermal reference only,
 """
 
 def _read_coolants() -> pd.DataFrame:
@@ -673,8 +675,8 @@ def sensitivity(d, g, fl, cool_df, T_amb, C_duty, T_limit) -> pd.DataFrame:
 # ------------------------------------------------------------------ #
 #  UI helpers                                                         #
 # ------------------------------------------------------------------ #
-ACCENT, INK, PAPER = "#F59E0B", "#0F172A", "#F7F8FA"
-BRAND_A, BRAND_B = "#6366F1", "#06B6D4"
+ACCENT, INK, PAPER = "#F59E0B", "#1F2937", "#FFFFFF"
+BRAND_A, BRAND_B = "#7C88F8", "#5BC8E8"
 CSS = f"""
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
@@ -683,21 +685,31 @@ CSS = f"""
   .stApp {{ background: {PAPER}; }}
   h1, h2, h3, h4 {{ color: {INK}; letter-spacing: -0.02em; font-weight: 700; }}
   /* hero */
-  .hero {{ padding: 18px 22px; border-radius: 18px; margin-bottom: 6px;
-      background: linear-gradient(120deg, {BRAND_A} 0%, {BRAND_B} 100%);
-      color: white; box-shadow: 0 8px 24px rgba(99,102,241,.25); }}
-  .hero h1 {{ color: white; margin: 0; font-size: 1.55rem; }}
-  .hero p {{ margin: 4px 0 0 0; opacity: .85; font-size: .9rem; }}
-  .chip {{ display:inline-block; padding: 3px 12px; border-radius: 999px;
-      font-size: .78rem; font-weight: 600; margin-top: 8px;
-      background: rgba(255,255,255,.18); border:1px solid rgba(255,255,255,.35);}}
+  .hero {{ padding: 12px 16px; border-radius: 16px; margin-bottom: 8px;
+      background: linear-gradient(120deg, #EEF2FF 0%, #E6F7FD 100%);
+      border: 1px solid #E3E8F4; }}
+  .hero-top {{ display:flex; align-items:baseline; gap:12px;
+      flex-wrap:wrap; }}
+  .hero h1 {{ color:{INK}; margin:0; font-size:1.15rem; display:inline; }}
+  .hero .sub {{ color:#64748B; font-size:.82rem; }}
+  .hero-stats {{ display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }}
+  .hstat {{ background:rgba(255,255,255,.75); border:1px solid #E3E8F4;
+      border-radius:10px; padding:5px 11px; font-size:.72rem;
+      color:#64748B; }}
+  .hstat b {{ display:block; font-size:.95rem; color:{INK};
+      font-weight:700; }}
+  .hstat b.ok {{ color:#15803D; }} .hstat b.bad {{ color:#B91C1C; }}
+  .chip {{ display:inline-block; padding: 2px 11px; border-radius: 999px;
+      font-size: .74rem; font-weight: 600; margin-left:auto;
+      background: rgba(124,136,248,.12); color:#4A54D8;
+      border:1px solid rgba(124,136,248,.35);}}
   .chip.bad {{ background:#FEE2E2; color:#B91C1C; border-color:#FCA5A5; }}
   .chip.ok  {{ background:#DCFCE7; color:#15803D; border-color:#86EFAC; }}
   /* KPI cards */
   .kpis {{ display:flex; gap: 12px; flex-wrap: wrap; margin: 10px 0 4px 0; }}
-  .kpi {{ flex:1 1 140px; background:#FFFFFF; border:1px solid #E7EAF0;
+  .kpi {{ flex:1 1 140px; background:#FFFFFF; border:1px solid #EEF1F6;
       border-radius: 14px; padding: 12px 14px;
-      box-shadow: 0 1px 3px rgba(16,24,40,.05); }}
+      box-shadow: 0 1px 2px rgba(16,24,40,.04); }}
   .kpi .l {{ font-size:.68rem; font-weight:600; letter-spacing:.06em;
       text-transform: uppercase; color:#64748B; }}
   .kpi .v {{ font-size:1.45rem; font-weight:800; color:{INK};
@@ -712,7 +724,7 @@ CSS = f"""
       border-bottom: none !important; flex-wrap: wrap; }}
   .stTabs [data-baseweb="tab"], div[data-testid="stTabs"] button[role="tab"],
   .stTabs button[role="tab"] {{ background:#FFFFFF !important;
-      border:1px solid #E7EAF0 !important; border-radius: 999px !important;
+      border:1px solid #EEF1F6 !important; border-radius: 999px !important;
       padding: 6px 16px !important; color:#475569 !important;
       font-weight:600; font-size:.86rem; }}
   .stTabs [aria-selected="true"],
@@ -725,19 +737,19 @@ CSS = f"""
   button[role="tab"] p {{ color: inherit !important; }}
   /* cards (bordered containers) */
   [data-testid="stVerticalBlockBorderWrapper"] {{ background:#FFFFFF;
-      border:1px solid #E7EAF0 !important; border-radius:16px !important;
-      box-shadow: 0 1px 3px rgba(16,24,40,.05);
+      border:1px solid #EEF1F6 !important; border-radius:16px !important;
+      box-shadow: 0 1px 2px rgba(16,24,40,.04);
       padding: 6px 10px !important; }}
   /* sidebar */
   [data-testid="stSidebar"] {{ background:#FFFFFF;
       border-right:1px solid #E7EAF0; }}
   /* buttons */
   .stButton > button, .stDownloadButton > button {{ border-radius: 10px;
-      border:1px solid #E7EAF0; font-weight:600; }}
+      border:1px solid #EEF1F6; font-weight:600; }}
   .stButton > button[kind="primary"] {{
       background: linear-gradient(120deg,{BRAND_A},{BRAND_B}); border:none; }}
   /* expanders */
-  [data-testid="stExpander"] {{ border:1px solid #E7EAF0; border-radius:12px;
+  [data-testid="stExpander"] {{ border:1px solid #EEF1F6; border-radius:12px;
       background:#FFFFFF; }}
   /* progress */
   [data-testid="stProgress"] > div > div > div {{
@@ -752,8 +764,15 @@ CSS = f"""
   .stTabs [data-baseweb="tab"]:hover {{ background:#F1F5F9; }}
   ::-webkit-scrollbar {{ width: 8px; height: 8px; }}
   ::-webkit-scrollbar-thumb {{ background:#CBD5E1; border-radius: 8px; }}
-  /* sticky live design panel */
-  .st-key-liveview {{ position: sticky; top: 3.4rem; z-index: 3; }}
+  /* sticky live design panel: several strategies for different builds */
+  .st-key-liveview {{ position: sticky; top: 0.8rem; z-index: 3;
+      max-height: calc(100vh - 1.6rem); overflow-y: auto; }}
+  div[data-testid="stColumn"]:has(.st-key-liveview),
+  div[data-testid="column"]:has(.st-key-liveview) {{
+      position: sticky; top: 0.8rem; align-self: flex-start;
+      height: fit-content; z-index: 3; }}
+  div[data-testid="stHorizontalBlock"]:has(.st-key-liveview) {{
+      overflow: visible !important; align-items: flex-start; }}
 </style>"""
 
 PLOTCFG = dict(displaylogo=False,
@@ -1240,8 +1259,7 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop):
                                            side="right", range=[0, 1.05]),
                                title="Oil's low h keeps even long thin fins ~90% efficient: "
                                      "fin hard",
-                               plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",
-                               legend=dict(orientation="h", y=1.15))
+                               plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",)
             st.plotly_chart(figF, use_container_width=True)
         with st.expander("6. Stirring and the thermosiphon floor"):
             us = np.linspace(0, 0.2, 50)
@@ -1264,8 +1282,7 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop):
                                yaxis_title="h [W/m²·K]",
                                title="The pack stirs itself a little; a circulator does it "
                                      "properly",
-                               plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",
-                               legend=dict(orientation="h", y=1.15))
+                               plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",)
             st.plotly_chart(figU, use_container_width=True)
             st.caption(f"Predicted self-circulation: buoyant head rho*beta*g*H*dT against "
                        f"laminar loop friction; here {res['u_ts']*1000:.1f} mm/s and "
@@ -1481,8 +1498,7 @@ def bench_wang_tab():
         figB.update_layout(height=380, xaxis_title="Time [min]",
                            yaxis_title="Temperature [°C]",
                            title="Transient rebuild of the paper's 2C experiment",
-                           plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",
-                           legend=dict(orientation="h", y=1.12))
+                           plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",)
         st.plotly_chart(figB, use_container_width=True)
         st.markdown("""
 **How to read the agreement.** Resistances land within ~30-50% and end temperatures within
@@ -2456,6 +2472,8 @@ def main():
     res = solve_steady(d, g, fl, 1.0, d["T_amb"], C_rate=C_steady)
     Q_duty = res["Q_eff"]
     loop = WATER_LOOP[d["loop_fluid"]]
+    T_gov = res["T_core"] if d["limit_core"] else res["T_b"]
+    ok = T_gov <= d["T_limit"]
     P_pump = water_pump_power(d, g, loop)["P"]
     if d.get("plate_on"):
         _sp = serpentine_pump(d, g, fl, d["u_oil"])
@@ -2470,33 +2488,29 @@ def main():
     ok = T_gov <= d["T_limit"]
     with hero_box:
         st.markdown(
-            f"<div class='hero'><h1>Immersion Pack Lab "
-            f"<span style='font-size:.55em;opacity:.75'>{APP_VERSION}</span>"
-            f"</h1>"
-            f"<p>{masses['E_kwh']:.1f} kWh / {d['Ns']*d['v_nom']:.0f} V - "
-            f"{g['N']} x {d['fmt']} in {fl['name']} - {d['duty']}"
-            f"{(' / ' + d['cycle']) if d['duty'] == 'Drive cycle' else ''}</p>"
-            f"<span class='chip {'ok' if ok else 'bad'}'>"
-            f"{'WITHIN LIMIT' if ok else 'OVER LIMIT'} - "
+            f"<div class='hero'><div class='hero-top'>"
+            f"<h1>Immersion Pack Lab <span style='font-size:.6em;"
+            f"color:#94A3B8'>{APP_VERSION}</span></h1>"
+            f"<span class='sub'>{masses['E_kwh']:.1f} kWh / "
+            f"{d['Ns']*d['v_nom']:.0f} V - {g['N']} x {d['fmt']} in "
+            f"{fl['name'].split('(')[0].strip()} - {d['duty']}"
+            f"{(' / ' + d['cycle']) if d['duty'] == 'Drive cycle' else ''}"
+            f"</span>"
+            f"<span class='chip'>{'WITHIN LIMIT' if ok else 'OVER LIMIT'} - "
             f"{T_gov:.1f} / {d['T_limit']:.0f} °C at {C_steady:.2f}C rms"
-            f"</span></div>", unsafe_allow_html=True)
-    with kpi_box:
-        kpi_cards([
-            ("Cell can / core", f"{res['T_b']:.1f} / {res['T_core']:.1f}",
-             f"{T_gov-d['T_limit']:+.1f} °C vs limit", "ok" if ok else "bad"),
-            ("Max continuous", f"{Cmax:.2f} C", f"to {d['T_limit']:.0f} °C",
-             "brand"),
-            ("Heat at duty", f"{Q_duty/1000:.2f} kW",
-             f"chiller ~{chil['P_el']/1000:.2f} kW el", ""),
-            ("Parasitics", f"{P_pump+P_stir:.0f} W",
-             f"pump {P_pump:.1f}" + (f" + stir {P_stir:.1f}" if P_stir > 0 else ""),
-             ""),
-            ("Coolant", f"{masses['V_oil_L']:.0f} L",
-             f"{masses['m_oil']:.0f} kg {fl['name'].split('(')[0].strip()}", ""),
-            ("Pack mass", f"{masses['m_pack']:.0f} kg",
-             f"{masses['whkg_pack']:.0f} Wh/kg | {masses['whl_pack']:.0f} Wh/L",
-             ""),
-        ])
+            f"</span></div>"
+            f"<div class='hero-stats'>"
+            f"<div class='hstat'>can / core<b class='{'ok' if ok else 'bad'}'>"
+            f"{res['T_b']:.1f} / {res['T_core']:.1f}°C</b></div>"
+            f"<div class='hstat'>max continuous<b>{Cmax:.2f} C</b></div>"
+            f"<div class='hstat'>heat at duty<b>{Q_duty/1000:.2f} kW</b></div>"
+            f"<div class='hstat'>chiller<b>{chil['P_el']/1000:.2f} kW el</b></div>"
+            f"<div class='hstat'>parasitics<b>{P_pump+P_stir:.0f} W</b></div>"
+            f"<div class='hstat'>coolant<b>{masses['V_oil_L']:.0f} L / "
+            f"{masses['m_oil']:.0f} kg</b></div>"
+            f"<div class='hstat'>pack<b>{masses['m_pack']:.0f} kg - "
+            f"{masses['whkg_pack']:.0f} Wh/kg</b></div>"
+            f"</div></div>", unsafe_allow_html=True)
 
     # ---------------- sidebar: status, save/load, report ---------------- #
     sb = st.sidebar
@@ -2647,7 +2661,6 @@ def main():
                                            range=[min(0, float(C_arr.min())*1.2),
                                                   max(float(np.abs(C_arr).max())*1.6, 4.2)]),
                                plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",
-                               legend=dict(orientation="h", y=1.14),
                                hovermode="x unified",
                                margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(figT, use_container_width=True, config=PLOTCFG)
@@ -2835,18 +2848,25 @@ def main():
             names_i = [b[0] for b in bars]
             figI.add_trace(go.Bar(name="Cell T [°C]", x=names_i,
                                   y=[b[1] for b in bars],
-                                  marker_color="#EF4444",
+                                  marker_color="#F0655F",
+                                  offsetgroup=1,
                                   text=[f"{b[1]:.1f}" for b in bars],
                                   textposition="outside"))
-            figI.add_trace(go.Bar(name="Pump [W]", x=names_i,
+            figI.add_trace(go.Bar(name="Pump [W] (right axis)", x=names_i,
                                   y=[b[2] for b in bars],
-                                  marker_color="#6366F1",
+                                  marker_color="#7C88F8", yaxis="y2",
+                                  offsetgroup=2,
                                   text=[f"{b[2]:.1f}" for b in bars],
                                   textposition="outside"))
-            figI.update_layout(barmode="group", height=320,
+            pmax = max(max(b[2] for b in bars), 0.1)
+            figI.update_layout(barmode="group", height=340,
+                               yaxis=dict(title="Cell T [°C]"),
+                               yaxis2=dict(title="Pump [W]",
+                                           overlaying="y", side="right",
+                                           range=[0, pmax * 1.5],
+                                           showgrid=False),
                                title=f"Concepts at {C_steady:.2f}C rms "
-                                     f"(limit {d['T_limit']:.0f} °C)",
-                               legend=dict(orientation="h", y=1.15))
+                                     f"(limit {d['T_limit']:.0f} °C)",)
             st.plotly_chart(figI, use_container_width=True, key="ideas_bar")
             dT_serp = rows_i[0]["T_can"] - rows_i[2]["T_can"]
             dT_stir = rows_i[0]["T_can"] - rows_i[1]["T_can"]
@@ -2992,8 +3012,7 @@ local film temperature - see the ν(T) curve in Design.""")
     figT_r.add_hline(y=d["T_limit"], line_dash="dash", line_color="#B91C1C")
     figT_r.update_layout(height=320, xaxis_title="min",
                          yaxis_title="°C", plot_bgcolor="rgba(255,255,255,0)",
-                         paper_bgcolor="rgba(0,0,0,0)",
-                         legend=dict(orientation="h", y=1.15))
+                         paper_bgcolor="rgba(0,0,0,0)",)
     figs_r["transient"] = figT_r
     secs = report_sections(d, g, fl, res, masses, tr, spec, Cmax, C_steady,
                            Q_duty, Q_bus, P_pump, P_stir, chil, figs_r)
@@ -3061,7 +3080,6 @@ local film temperature - see the ν(T) curve in Design.""")
                                    marker_color="#6366F1"))
             figF2.update_layout(barmode="group", height=260,
                                 title="Core-to-can ΔT [K]",
-                                legend=dict(orientation="h", y=1.2),
                                 margin=dict(l=10, r=10, t=44, b=10))
             st.plotly_chart(figF2, use_container_width=True, key="fea2")
             st.caption("Exact-solution validation -0.1%. The app is 20-34% "
@@ -3348,7 +3366,6 @@ def setpoint_trade(d, g, fl, C_duty, T_amb):
                                   side="right", showgrid=False),
                       title=f"Set-point trade at {C_duty:.2f}C: COP vs DCIR",
                       plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",
-                      legend=dict(orientation="h", y=1.2),
                       margin=dict(l=10, r=10, t=50, b=10))
     return fig
 
@@ -3377,7 +3394,6 @@ def c_sweep_fig(d, g, fl, T_amb, C_now):
                       title="Scaling the same hardware with C "
                             "(heat ~ C^2, softened by DCIR(T))",
                       plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",
-                      legend=dict(orientation="h", y=1.15),
                       margin=dict(l=10, r=10, t=60, b=10))
     return fig
 
@@ -3566,8 +3582,7 @@ def benchmark_db_tab(d, g, masses, Cmax, res):
         figA.update_layout(height=470, xaxis_title="Gravimetric [Wh/kg]",
                            yaxis_title="Volumetric [Wh/L]",
                            title="Energy-density map - bubble = pack kWh; "
-                                 "click legend classes on/off",
-                           legend=dict(orientation="h", y=1.12))
+                                 "click legend classes on/off",)
         st.plotly_chart(figA, use_container_width=True, key="bm_A",
                         config=PLOTCFG)
         st.session_state["bm_figA"] = figA
@@ -3598,8 +3613,7 @@ def benchmark_db_tab(d, g, masses, Cmax, res):
         figB.update_layout(height=460, xaxis_title="Wh/kg",
                            yaxis_title="W/kg",
                            title="Power vs energy density - database 10 s "
-                                 "ratings vs this design's continuous",
-                           legend=dict(orientation="h", y=1.12))
+                                 "ratings vs this design's continuous",)
         st.plotly_chart(figB, use_container_width=True, key="bm_B",
                         config=PLOTCFG)
 
@@ -3675,8 +3689,7 @@ def benchmark_db_tab(d, g, masses, Cmax, res):
                                       marker=dict(symbol="star", size=18,
                                                   color="#EF4444")))
         figE.update_layout(height=460, xaxis_title=xk, yaxis_title=yk,
-                           xaxis_type="log" if logx else "linear",
-                           legend=dict(orientation="h", y=1.12))
+                           xaxis_type="log" if logx else "linear",)
         st.plotly_chart(figE, use_container_width=True, key="bm_E",
                         config=PLOTCFG)
 

@@ -177,3 +177,19 @@ thickness and outer dimensions; interstitial routing draws correctly. 3D
 stays as an option, resized to fit the panel with a livelier camera and
 lighting; plan view height also fits. All three views follow every design
 change live.
+
+## v8: the Live Pack and direct-manipulation UX
+Results now opens on the Live Pack: a client-side animated cross-section
+(pure canvas, no reruns) where oil particles circulate at the solved
+velocity - thermosiphon loop, stirred, or guided serpentine lanes with
+plates drawn - water beads travel and warm along the tubes, cells and cores
+are coloured by their real solved temperatures with heat glow scaled by Q,
+and the weakest link is tagged on the picture. Play/speed/layer/exaggerate
+controls run in the browser instantly. The station wall is now a stepper:
+click a box in the thermal circuit (the chart is selection-enabled) or pick
+a chip, and that one station opens with its numbers and improvement moves;
+the Sankey, ladder and set-point trade tuck into an expander. The transient
+gains a time scrubber with a live readout card (can/core, C, SoC, oil,
+heat at the picked instant). Design's three input groups are collapsed
+expanders whose titles show the live key values. No API or internet is
+required for any of this; livepack.py ships alongside app.py.

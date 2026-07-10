@@ -23,6 +23,8 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.io as pio
+import streamlit.components.v1 as components
+from livepack import live_pack_html
 
 pio.templates["packlab"] = go.layout.Template(layout=dict(
     font=dict(family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif",
@@ -2206,8 +2208,10 @@ def pack_views_fig(d, g, masses, height=560):
 def design_inputs(cool_df) -> dict:
     d = {}
     c1 = c2 = c3 = contextlib.nullcontext()
-    with c1, st.container(border=True):
-        st.markdown("##### Cells")
+    ss = st.session_state
+    t_cells = (f"Cells - {ss.get('w_Ns',108)}S{ss.get('w_Np',10)}P x "
+               f"{ss.get('w_fmt','21700')}, {ss.get('w_rdc',25.0):.0f} mΩ")
+    with c1, st.expander(t_cells, expanded=False):
         d["fmt"] = _w(st.selectbox, "Format", "fmt", "21700",
                       options=list(FORMATS) + ["Custom"],
                       help="Presets from teardown data; 4680 DCIR is an estimate.")
@@ -2244,8 +2248,10 @@ def design_inputs(cool_df) -> dict:
                 st.session_state["_pending"] = dict(
                     w_Ns=ns, w_Np=max(int(round(tE * 1000 / (ns * vn * cp_))), 1))
                 st.rerun()
-    with c2, st.container(border=True):
-        st.markdown("##### Layout and coolant")
+    t_lay = (f"Layout and coolant - {ss.get('w_pitch',27.0):.0f} mm pitch, "
+             f"{ss.get('w_fluid','MIVOLT DF7')}, "
+             f"{ss.get('w_circ','Thermosiphon only').split(' (')[0].lower()}")
+    with c2, st.expander(t_lay, expanded=False):
         d["arrangement"] = _w(st.radio, "Arrangement", "arr", "Square",
                               options=["Square", "Hexagonal"], horizontal=True)
         d["pitch"] = _w(st.slider, "Cell pitch [mm]", "pitch", 27.0, min_value=22.0, max_value=60.0, step=0.5) / 1000
@@ -2286,8 +2292,9 @@ def design_inputs(cool_df) -> dict:
         with st.expander("Holders"):
             d["m_holder_g"] = _w(st.slider, "Holder mass [g/cell]", "mhold", 8.0, min_value=0.0, max_value=25.0, step=1.0)
             d["holder_block"] = _w(st.slider, "Gap-flow blockage", "hblk", 0.20, min_value=0.0, max_value=0.6, step=0.05)
-    with c3, st.container(border=True):
-        st.markdown("##### Heat exchanger, water and structure")
+    t_hx = (f"Heat exchanger, water, structure - {ss.get('w_ntub',16)} tubes, "
+            f"{ss.get('w_flow',10.0):.0f} L/min at {ss.get('w_twin',20.0):.0f}°C")
+    with c3, st.expander(t_hx, expanded=False):
         d["n_tubes"] = _w(st.slider, "Tubes", "ntub", 16, min_value=1, max_value=60)
         d["tube_od"] = _w(st.slider, "Tube OD [mm]", "tod", 10.0, min_value=4.0, max_value=25.0, step=0.5) / 1000
         d["tube_wall"] = _w(st.slider, "Wall [mm]", "twall", 1.0, min_value=0.5, max_value=3.0, step=0.25) / 1000
@@ -2578,7 +2585,22 @@ def main():
                                    xaxis_title="min", yaxis_title="km/h",
                                    plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)")
                 st.plotly_chart(figV, use_container_width=True)
-            band = st.checkbox("Show +/-30% oil-film band", False)
+            sc1, sc2 = st.columns([2.2, 1])
+            t_end = float(tr["t"][-1])
+            t_pick = sc1.slider("Inspect time [s]", 0.0, t_end,
+                                min(t_end, t_end * 0.5), step=max(t_end/200, 2.0),
+                                key="t_scrub")
+            band = sc2.checkbox("±30% oil-film band", False)
+            i_p = int(np.argmin(np.abs(tr["t"] - t_pick)))
+            kpi_cards([
+                ("At t = {:.0f} s".format(tr["t"][i_p]),
+                 f"{tr['T_b'][i_p]:.1f} / {tr['T_core'][i_p]:.1f}°C",
+                 "can / core", "bad" if tr["T_b"][i_p] > d["T_limit"] else "ok"),
+                ("C-rate", f"{tr['C'][i_p]:+.2f} C",
+                 f"SoC {tr['soc'][i_p]*100:.0f}%", ""),
+                ("Oil", f"{tr['T_il'][i_p]:.1f}°C",
+                 f"heat {tr['Q'][i_p]/1000:.2f} kW", ""),
+            ])
             figT = go.Figure()
             if band:
                 trs = []
@@ -2597,6 +2619,8 @@ def main():
             figT.add_trace(go.Scatter(x=tr["t"]/60, y=tr["T_il"], name="Bulk oil",
                                       line=dict(color=ACCENT, width=3)))
             figT.add_hline(y=d["T_limit"], line_dash="dash", line_color="#B91C1C")
+            figT.add_vline(x=t_pick / 60, line_color="#6366F1", line_width=2,
+                           opacity=0.7)
             figT.add_trace(go.Scatter(x=t_arr/60, y=C_arr, name="C-rate", yaxis="y2",
                                       line=dict(color="#94A3B8", dash="dot")))
             if d["duty"] != "Constant C" or d.get("track_soc"):
@@ -2625,20 +2649,49 @@ def main():
 
     # ---------------- Results ---------------- #
     with tabs[2]:
-        st.plotly_chart(heat_sankey(res, Q_duty, Q_bus, P_pump, P_stir, chil),
-                        use_container_width=True, key="res_sankey", config=PLOTCFG)
-        st.plotly_chart(thermal_circuit_fig(d, g, fl, res, Q_duty),
-                        use_container_width=True, key="res_circuit",
-                        config=PLOTCFG)
-        st.plotly_chart(waterfall_chart(res, Q_duty, d),
-                        use_container_width=True, key="res_ladder")
-        st.markdown("#### The heat journey, station by station")
-        st.caption("Follow the watts from inside the cell to the chiller. "
-                   "Each card: what happens here, the numbers, and how to "
-                   "improve this stage.")
         stations, totdT = station_list(d, g, fl, res, masses, Q_duty, Q_bus,
                                        P_pump, P_stir, chil)
+        films = [("Can to oil", res["R_b"]), ("Oil to tube+fins", res["R_ot"]),
+                 ("Water film", res["R_in"])]
+        weak_name = max(films, key=lambda x: x[1])[0]
+        lp_state = dict(
+            T_b=res["T_b"], T_core=res["T_core"], T_w_in=d["T_water_in"],
+            dT_water=res["dT_water"], T_limit=d["T_limit"],
+            q_kw=Q_duty / 1000, c_rms=C_steady, spread=res["spread"],
+            u_mm_s=max(d["u_oil"], res["u_ts"]) * 1000,
+            flow_lpm=d["flow_lpm"], flow_norm=min(d["flow_lpm"] / 20, 2.0),
+            mode=("serpentine" if d.get("plate_on") else
+                  ("stirred" if d["u_oil"] > 0 else "thermosiphon")),
+            interstitial=d.get("tube_plane") == "Interstitial (between rows)",
+            n_rows_draw=min(g["n_rows"], 14),
+            n_tubes_draw=min(d["n_tubes"], 12),
+            d_over_p=d["d_cell"] / d["pitch"],
+            fill_frac=g["fill_h"] / g["Lz"],
+            cell_top_frac=(d["bottom_gap"] + d["h_cell"]) / g["Lz"],
+            cell_bot_frac=d["bottom_gap"] / g["Lz"],
+            weak=weak_name)
+        components.html(live_pack_html(lp_state), height=436)
+        st.caption("Live Pack: oil particles move at the solved circulation "
+                   "speed, water beads travel and warm along the tubes, and "
+                   "colours are the real solved temperatures. Its controls "
+                   "run in the browser - instant, no recompute.")
+
+        st.markdown("#### The heat journey")
+        ev = st.plotly_chart(thermal_circuit_fig(d, g, fl, res, Q_duty),
+                             use_container_width=True, key="res_circuit",
+                             config=PLOTCFG, on_select="rerun",
+                             selection_mode="points")
+        names_s = [s_[0] for s_ in stations]
+        if ev and ev.selection and ev.selection.points:
+            idx = ev.selection.points[0].get("point_index", 0)
+            cmap = {0: 0, 1: 1, 2: 3, 3: 4, 4: 5, 5: 6}
+            st.session_state["seg_station"] = names_s[cmap.get(idx, 0)]
+        sel = st.segmented_control("Station", names_s, key="seg_station",
+                                   default=names_s[0],
+                                   label_visibility="collapsed")             if hasattr(st, "segmented_control") else             st.radio("Station", names_s, horizontal=True, key="seg_station")
         for name, dT, nums, imp in stations:
+            if name != (sel or names_s[0]):
+                continue
             with st.container(border=True):
                 h1, h2 = st.columns([3, 1])
                 h1.markdown(f"**{name}**")
@@ -2646,10 +2699,15 @@ def main():
                     h2.progress(min(dT / max(totdT, 1e-9), 1.0),
                                 text=f"{dT:.1f} K ({100*dT/max(totdT,1e-9):.0f}%)")
                 st.markdown(nums)
-                with st.expander("How to improve this stage"):
-                    st.markdown(imp)
-        st.plotly_chart(setpoint_trade(d, g, fl, C_steady, d["T_amb"]),
-                        use_container_width=True, key="res_setpoint")
+                st.markdown(f"*Improve:* {imp}")
+        with st.expander("Full flow map, ladder and set-point trade"):
+            st.plotly_chart(heat_sankey(res, Q_duty, Q_bus, P_pump, P_stir,
+                                        chil), use_container_width=True,
+                            key="res_sankey", config=PLOTCFG)
+            st.plotly_chart(waterfall_chart(res, Q_duty, d),
+                            use_container_width=True, key="res_ladder")
+            st.plotly_chart(setpoint_trade(d, g, fl, C_steady, d["T_amb"]),
+                            use_container_width=True, key="res_setpoint")
 
     # ---------------- Improve ---------------- #
     with tabs[3]:
@@ -3087,6 +3145,7 @@ def thermal_circuit_fig(d, g, fl, res, Q):
                            arrowhead=2, arrowwidth=2, arrowcolor="#CBD5E1")
     fig.add_trace(go.Scatter(x=hover_x, y=hover_y, mode="markers",
                              marker=dict(size=42, opacity=0.0),
+                             customdata=list(range(len(hover_x))),
                              hovertext=hover_t, hoverinfo="text",
                              showlegend=False))
     for mode, c in mode_c.items():

@@ -1,3 +1,22 @@
+# Immersion Pack Lab - complete bundle (v8.4)
+
+**Extract this whole folder and keep it together.** Launch with `./run.sh`
+(macOS/Linux) or `run.bat` (Windows), or manually:
+`streamlit run app.py` - from v8.4 the app finds its data files next to
+app.py no matter which directory you launch from.
+
+| File | Purpose |
+|---|---|
+| app.py | the application (all physics, UI, report) |
+| livepack.py | the animated Live Pack canvas component |
+| coolants.csv | dielectric fluid property library |
+| pack_benchmark.xlsx | your 58-pack BEV database (drives Compare) |
+| .streamlit/config.toml | native theme (keep the folder) |
+| requirements.txt | streamlit, plotly, pandas, numpy, openpyxl |
+| run.sh / run.bat | one-click launchers |
+
+Every file above is required. Version shows in the app header.
+
 # Immersion Pack Lab v4
 
 Parametric design and teaching app for a **static or stirred immersion-cooled

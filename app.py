@@ -19,13 +19,17 @@
 
 import os, math, contextlib
 
-APP_VERSION = "v8.3"
+APP_VERSION = "v8.4"
+from pathlib import Path
+_APPDIR = Path(__file__).resolve().parent
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.io as pio
 import streamlit.components.v1 as components
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from livepack import live_pack_html
 
 pio.templates["packlab"] = go.layout.Template(layout=dict(
@@ -3441,7 +3445,8 @@ _BM_COLS = {
  "Unnamed: 20": "wcont_kg_chg", "Volumetric Power Density": "w10s_l",
  "Unnamed: 22": "wcont_l"}
 
-def load_benchmark(path="pack_benchmark.xlsx", uploaded=None):
+def load_benchmark(path=None, uploaded=None):
+    path = path or str(_APPDIR / "pack_benchmark.xlsx")
     try:
         import io
         srcx = io.BytesIO(uploaded) if uploaded is not None else path

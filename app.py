@@ -700,17 +700,23 @@ CSS = f"""
   .kpi .v.brand {{ background: linear-gradient(120deg,{BRAND_A},{BRAND_B});
       -webkit-background-clip:text; background-clip:text; color:transparent; }}
   .kpi .s {{ font-size:.75rem; color:#64748B; margin-top:2px; }}
-  /* tabs as pills */
-  .stTabs [data-baseweb="tab-list"] {{ gap: 6px; border-bottom: none;
-      flex-wrap: wrap; }}
-  .stTabs [data-baseweb="tab"] {{ background:#FFFFFF; border:1px solid #E7EAF0;
-      border-radius: 999px; padding: 6px 16px; color:#475569;
+  /* tabs as pills (selectors covering multiple Streamlit versions) */
+  .stTabs [data-baseweb="tab-list"],
+  div[data-testid="stTabs"] div[role="tablist"] {{ gap: 6px !important;
+      border-bottom: none !important; flex-wrap: wrap; }}
+  .stTabs [data-baseweb="tab"], div[data-testid="stTabs"] button[role="tab"],
+  .stTabs button[role="tab"] {{ background:#FFFFFF !important;
+      border:1px solid #E7EAF0 !important; border-radius: 999px !important;
+      padding: 6px 16px !important; color:#475569 !important;
       font-weight:600; font-size:.86rem; }}
-  .stTabs [aria-selected="true"] {{
+  .stTabs [aria-selected="true"],
+  div[data-testid="stTabs"] button[role="tab"][aria-selected="true"] {{
       background: linear-gradient(120deg,{BRAND_A},{BRAND_B}) !important;
       color: white !important; border-color: transparent !important; }}
-  .stTabs [data-baseweb="tab-highlight"], .stTabs [data-baseweb="tab-border"]
-      {{ display:none; }}
+  .stTabs [data-baseweb="tab-highlight"], .stTabs [data-baseweb="tab-border"],
+  div[data-testid="stTabs"] div[data-testid="stTabsHighlight"]
+      {{ display:none !important; }}
+  button[role="tab"] p {{ color: inherit !important; }}
   /* cards (bordered containers) */
   [data-testid="stVerticalBlockBorderWrapper"] {{ background:#FFFFFF;
       border:1px solid #E7EAF0 !important; border-radius:16px !important;

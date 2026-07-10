@@ -208,3 +208,15 @@ normalised metrics (with the continuous-vs-10 s power caveat stated). Learn
 opens with "Where the heat goes - the whole story in plain words": a
 seven-step narrative using the live numbers, ending with what matters,
 what doesn't, and the current biggest toll.
+
+## v8.2: Live Pack hardened; native theme
+The Live Pack component is rewritten to be self-diagnosing: any browser
+error paints its own message onto the canvas and status line instead of a
+blank panel, and the corner badges are pre-filled server-side so the solved
+numbers show even if a browser blocks the script. The canvas is retina-safe
+(CSS height + devicePixelRatio buffer scaling, ResizeObserver refit) and
+the script passes an automated Node syntax + stub-DOM runtime harness in
+the test suite. The toolbar is a floating translucent glass bar on a dark
+canvas. A .streamlit/config.toml theme now ships (keep the folder next to
+app.py) so native widgets adopt the brand palette on any Streamlit build,
+and the tab-pill CSS carries selectors for multiple Streamlit versions.

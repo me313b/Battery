@@ -220,3 +220,12 @@ the test suite. The toolbar is a floating translucent glass bar on a dark
 canvas. A .streamlit/config.toml theme now ships (keep the folder next to
 app.py) so native widgets adopt the brand palette on any Streamlit build,
 and the tab-pill CSS carries selectors for multiple Streamlit versions.
+
+## v8.3: benchmark comparison always visible; version badge
+The header now shows the app version so it is always clear which bundle is
+running. The BEV benchmark section no longer hides anything in collapsed
+expanders: a sub-navigation (Density map / Power / Rankings / Explorer /
+Head-to-head / Full table) shows every comparison full-size, with a green
+DATA LOADED chip confirming the source (58 packs) or, if the file is
+missing, a clear error plus an in-app upload fallback that works for the
+session. Power and Explorer views are grouped by energy class like the map.

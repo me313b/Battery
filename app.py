@@ -18,6 +18,8 @@
 # =====================================================================
 
 import os, math, contextlib
+
+APP_VERSION = "v8.3"
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -2464,7 +2466,9 @@ def main():
     ok = T_gov <= d["T_limit"]
     with hero_box:
         st.markdown(
-            f"<div class='hero'><h1>Immersion Pack Lab</h1>"
+            f"<div class='hero'><h1>Immersion Pack Lab "
+            f"<span style='font-size:.55em;opacity:.75'>{APP_VERSION}</span>"
+            f"</h1>"
             f"<p>{masses['E_kwh']:.1f} kWh / {d['Ns']*d['v_nom']:.0f} V - "
             f"{g['N']} x {d['fmt']} in {fl['name']} - {d['duty']}"
             f"{(' / ' + d['cycle']) if d['duty'] == 'Drive cycle' else ''}</p>"
@@ -3437,9 +3441,11 @@ _BM_COLS = {
  "Unnamed: 20": "wcont_kg_chg", "Volumetric Power Density": "w10s_l",
  "Unnamed: 22": "wcont_l"}
 
-def load_benchmark(path="pack_benchmark.xlsx"):
+def load_benchmark(path="pack_benchmark.xlsx", uploaded=None):
     try:
-        df = pd.read_excel(path, sheet_name="Sheet1").rename(columns=_BM_COLS)
+        import io
+        srcx = io.BytesIO(uploaded) if uploaded is not None else path
+        df = pd.read_excel(srcx, sheet_name="Sheet1").rename(columns=_BM_COLS)
     except Exception:
         return None
     df = df.iloc[1:].reset_index(drop=True)
@@ -3457,14 +3463,22 @@ def _pct(series, val):
     return 100.0 * (s < val).mean() if len(s) else float("nan")
 
 def benchmark_db_tab(d, g, masses, Cmax, res):
-    bm = load_benchmark()
+    up_bytes = st.session_state.get("bm_upload_bytes")
+    bm = load_benchmark(uploaded=up_bytes)
     if bm is None:
-        st.warning("pack_benchmark.xlsx not found next to app.py.")
+        st.error("pack_benchmark.xlsx not found next to app.py. Drop the "
+                 "file in the app folder, or load it here for this session:")
+        upf = st.file_uploader("Load benchmark xlsx", type="xlsx",
+                               key="bm_upl")
+        if upf is not None:
+            st.session_state["bm_upload_bytes"] = upf.getvalue()
+            st.rerun()
         return None
-    st.caption(f"{len(bm)} BEV road-car packs from your file "
-               "(batterydesign.net database, filtered). Star = this design; "
-               "hollow star = this design with the FEA-honest ribbed "
-               "enclosure (knock-down 0.56 instead of 0.45).")
+    srcnote = ("uploaded this session" if up_bytes is not None
+               else "pack_benchmark.xlsx next to app.py")
+    st.markdown(f"<span class='chip ok'>DATA LOADED - {len(bm)} BEV "
+                f"road-car packs ({srcnote})</span>", unsafe_allow_html=True)
+
     f1, f2, f3 = st.columns([1.2, 1, 1])
     e_rng = f1.slider("Pack energy filter [kWh]", 0.0,
                       float(np.ceil(bm["E_tot"].max() / 10) * 10),
@@ -3477,9 +3491,18 @@ def benchmark_db_tab(d, g, masses, Cmax, res):
         v = v[v["model"].str.contains(q, case=False, na=False)]
     if only_p:
         v = v[v["P10s_kW"].notna()]
+
+    def eclass(e):
+        return ("City < 50 kWh" if e < 50 else "Mid 50-80 kWh" if e < 80
+                else "Large 80-110 kWh" if e < 110 else "Flagship > 110 kWh")
+    v = v.copy(); v["grp"] = v["E_tot"].apply(eclass)
+    GRP_C = {"City < 50 kWh": "#10B981", "Mid 50-80 kWh": "#0EA5E9",
+             "Large 80-110 kWh": "#6366F1", "Flagship > 110 kWh": "#8B5CF6"}
     my_whkg, my_whl = masses["whkg_pack"], masses["whl_pack"]
-    m_rib = masses["m_pack"] - masses["m_struct"] + masses["m_struct"] * 0.56 / 0.45
+    m_rib = masses["m_pack"] - masses["m_struct"] \
+            + masses["m_struct"] * 0.56 / 0.45
     whkg_rib = masses["E_kwh"] * 1000 / m_rib
+
     kpi_cards([
         ("Packs shown", f"{len(v)}", f"of {len(bm)} in the file", ""),
         ("Wh/kg percentile", f"{_pct(bm['whkg'], my_whkg):.0f}%",
@@ -3489,129 +3512,125 @@ def benchmark_db_tab(d, g, masses, Cmax, res):
         ("Cell-to-pack mass", f"{100*masses['m_cells']/masses['m_pack']:.0f}%",
          f"database median {100*bm['ctp_m'].median():.0f}%", ""),
     ])
-    # ---- A: energy density map, grouped by energy class ----
-    def eclass(e):
-        return ("City < 50 kWh" if e < 50 else "Mid 50-80 kWh" if e < 80
-                else "Large 80-110 kWh" if e < 110 else "Flagship > 110 kWh")
-    v = v.copy(); v["grp"] = v["E_tot"].apply(eclass)
-    GRP_C = {"City < 50 kWh": "#10B981", "Mid 50-80 kWh": "#0EA5E9",
-             "Large 80-110 kWh": "#6366F1", "Flagship > 110 kWh": "#8B5CF6"}
-    z1, z2 = st.columns([1, 3])
-    zones = z1.toggle("Median zones", True, key="bm_zones",
-                      help="Crosshair at the database medians; the shaded "
-                           "band spans the middle half (25th-75th pct).")
-    figA = go.Figure()
-    if zones:
-        for ax, med, q1, q3 in [("x", bm["whkg"].median(),
-                                 bm["whkg"].quantile(.25), bm["whkg"].quantile(.75)),
-                                ("y", bm["whl"].median(),
-                                 bm["whl"].quantile(.25), bm["whl"].quantile(.75))]:
-            if ax == "x":
-                figA.add_vrect(x0=q1, x1=q3, fillcolor="rgba(99,102,241,0.05)",
-                               line_width=0)
-                figA.add_vline(x=med, line_dash="dot", line_color="#94A3B8",
-                               annotation_text=f"median {med:.0f}")
-            else:
-                figA.add_hrect(y0=q1, y1=q3, fillcolor="rgba(99,102,241,0.05)",
-                               line_width=0)
-                figA.add_hline(y=med, line_dash="dot", line_color="#94A3B8",
-                               annotation_text=f"median {med:.0f}")
-    for gname, gg_ in v.groupby("grp"):
-        figA.add_trace(go.Scatter(
-            x=gg_["whkg"], y=gg_["whl"], mode="markers", name=gname,
-            marker=dict(size=7 + 20 * gg_["E_tot"] / bm["E_tot"].max(),
-                        color=GRP_C[gname], opacity=0.85,
-                        line=dict(color="white", width=1)),
-            hovertext=[f"<b>{m}</b><br>{e:.0f} kWh, {mm:.0f} kg<br>"
-                       f"{wk:.0f} Wh/kg, {wl:.0f} Wh/L"
-                       + (f"<br>{p:.0f} kW 10 s ({c:.1f}C)" if p == p else "")
-                       for m, e, mm, wk, wl, p, c in zip(
-                           gg_["model"], gg_["E_tot"], gg_["m_pack"],
-                           gg_["whkg"], gg_["whl"], gg_["P10s_kW"],
-                           gg_["C10s"])],
-            hoverinfo="text"))
-    z2.caption("Click legend entries to switch energy classes on and off; "
-               "double-click isolates one class.")
-    figA.add_trace(go.Scatter(x=[my_whkg], y=[my_whl], mode="markers+text",
-        text=["This design"], textposition="top center",
-        marker=dict(symbol="star", size=22, color="#EF4444",
-                    line=dict(color="white", width=2)), name="This design"))
-    figA.add_trace(go.Scatter(x=[whkg_rib], y=[my_whl * masses["m_pack"] / m_rib * 0 + my_whl],
-        mode="markers", name="FEA-honest enclosure",
-        marker=dict(symbol="star-open", size=18, color="#EF4444",
-                    line=dict(width=2))))
-    figA.update_layout(height=460, xaxis_title="Gravimetric [Wh/kg]",
-                       yaxis_title="Volumetric [Wh/L]",
-                       title="Energy-density map - bubble size = pack kWh, colour = class",
-                       legend=dict(orientation="h", y=1.12))
-    st.plotly_chart(figA, use_container_width=True, key="bm_A", config=PLOTCFG)
-    cB, cC = st.columns(2)
-    with cB:
+    VIEWS = ["Density map", "Power", "Rankings", "Explorer",
+             "Head-to-head", "Full table"]
+    sub = st.segmented_control("Benchmark view", VIEWS, default=VIEWS[0],
+                               key="bm_view", label_visibility="collapsed") \
+        if hasattr(st, "segmented_control") else \
+        st.radio("Benchmark view", VIEWS, horizontal=True, key="bm_view")
+    sub = sub or VIEWS[0]
+
+    if sub == "Density map":
+        z1, z2 = st.columns([1, 3])
+        zones = z1.toggle("Median zones", True, key="bm_zones")
+        figA = go.Figure()
+        if zones:
+            q1x, mx, q3x = (bm["whkg"].quantile(.25), bm["whkg"].median(),
+                            bm["whkg"].quantile(.75))
+            q1y, my_, q3y = (bm["whl"].quantile(.25), bm["whl"].median(),
+                             bm["whl"].quantile(.75))
+            figA.add_vrect(x0=q1x, x1=q3x, fillcolor="rgba(99,102,241,0.05)",
+                           line_width=0)
+            figA.add_vline(x=mx, line_dash="dot", line_color="#94A3B8",
+                           annotation_text=f"median {mx:.0f}")
+            figA.add_hrect(y0=q1y, y1=q3y, fillcolor="rgba(99,102,241,0.05)",
+                           line_width=0)
+            figA.add_hline(y=my_, line_dash="dot", line_color="#94A3B8",
+                           annotation_text=f"median {my_:.0f}")
+        for gname, gg_ in v.groupby("grp"):
+            figA.add_trace(go.Scatter(
+                x=gg_["whkg"], y=gg_["whl"], mode="markers", name=gname,
+                marker=dict(size=7 + 20 * gg_["E_tot"] / bm["E_tot"].max(),
+                            color=GRP_C[gname], opacity=0.85,
+                            line=dict(color="white", width=1)),
+                hovertext=[f"<b>{mn}</b><br>{e:.0f} kWh, {mm:.0f} kg<br>"
+                           f"{wk:.0f} Wh/kg, {wl:.0f} Wh/L"
+                           for mn, e, mm, wk, wl in zip(
+                               gg_["model"], gg_["E_tot"], gg_["m_pack"],
+                               gg_["whkg"], gg_["whl"])],
+                hoverinfo="text"))
+        figA.add_trace(go.Scatter(x=[my_whkg], y=[my_whl],
+            mode="markers+text", text=["This design"],
+            textposition="top center", name="This design",
+            marker=dict(symbol="star", size=22, color="#EF4444",
+                        line=dict(color="white", width=2))))
+        figA.add_trace(go.Scatter(x=[whkg_rib], y=[my_whl], mode="markers",
+            name="FEA-honest enclosure",
+            marker=dict(symbol="star-open", size=18, color="#EF4444",
+                        line=dict(width=2))))
+        figA.update_layout(height=470, xaxis_title="Gravimetric [Wh/kg]",
+                           yaxis_title="Volumetric [Wh/L]",
+                           title="Energy-density map - bubble = pack kWh; "
+                                 "click legend classes on/off",
+                           legend=dict(orientation="h", y=1.12))
+        st.plotly_chart(figA, use_container_width=True, key="bm_A",
+                        config=PLOTCFG)
+        st.session_state["bm_figA"] = figA
+        z2.caption("Double-click a legend entry to isolate one class.")
+
+    elif sub == "Power":
         vp = v[v["kW_kg_10s"].notna()]
         figB = go.Figure()
-        figB.add_trace(go.Scatter(x=vp["whkg"], y=vp["kW_kg_10s"], mode="markers",
-            name="10 s (database)", marker=dict(size=9, color="#6366F1",
-            opacity=0.8), hovertext=vp["model"], hoverinfo="text+x+y"))
+        for gname, gg_ in vp.groupby("grp"):
+            figB.add_trace(go.Scatter(x=gg_["whkg"], y=gg_["kW_kg_10s"],
+                mode="markers", name=gname,
+                marker=dict(size=10, color=GRP_C[gname], opacity=0.85),
+                hovertext=gg_["model"], hoverinfo="text+x+y"))
         vc = v[v["wcont_kg_dis"].notna()]
         figB.add_trace(go.Scatter(x=vc["whkg"], y=vc["wcont_kg_dis"],
             mode="markers", name="continuous (database)",
-            marker=dict(size=10, color="#0EA5E9", symbol="diamond"),
+            marker=dict(size=11, color="#0F172A", symbol="diamond"),
             hovertext=vc["model"], hoverinfo="text+x+y"))
         my_cont = Cmax * masses["E_kwh"] * 1000 / masses["m_pack"]
-        figB.add_trace(go.Scatter(x=[my_whkg], y=[my_cont], mode="markers+text",
-            text=["this (cont.)"], textposition="top center",
-            marker=dict(symbol="star", size=18, color="#EF4444"),
-            name="This design, continuous"))
-        figB.add_trace(go.Scatter(x=[68.5], y=[150000 / 89], mode="markers+text",
-            text=["AMG HPB80 (peak)"], textposition="bottom center",
-            marker=dict(symbol="x", size=12, color="#D97706"), name="HPB80"))
-        figB.update_layout(height=380, xaxis_title="Wh/kg",
+        figB.add_trace(go.Scatter(x=[my_whkg], y=[my_cont],
+            mode="markers+text", text=["this (continuous)"],
+            textposition="top center", name="This design",
+            marker=dict(symbol="star", size=20, color="#EF4444")))
+        figB.add_trace(go.Scatter(x=[68.5], y=[150000 / 89],
+            mode="markers+text", text=["AMG HPB80 (peak)"],
+            textposition="bottom center", name="HPB80",
+            marker=dict(symbol="x", size=12, color="#D97706")))
+        figB.update_layout(height=460, xaxis_title="Wh/kg",
                            yaxis_title="W/kg",
-                           title="Power vs energy density - 10 s ratings vs "
-                                 "this design's thermal continuous",
-                           legend=dict(orientation="h", y=1.15))
+                           title="Power vs energy density - database 10 s "
+                                 "ratings vs this design's continuous",
+                           legend=dict(orientation="h", y=1.12))
         st.plotly_chart(figB, use_container_width=True, key="bm_B",
                         config=PLOTCFG)
-        st.caption("Honest comparison note: database power is a 10 s rating; "
-                   "the red star is this design's thermally continuous "
-                   "capability, which is the harder number.")
-    with cC:
-        vr = v.dropna(subset=["whkg"]).sort_values("whkg", ascending=True)
-        vr = pd.concat([vr.tail(18)])
-        figC = go.Figure(go.Bar(y=vr["model"], x=vr["whkg"], orientation="h",
-                                marker_color="#94A3B8"))
-        figC.add_vline(x=my_whkg, line_color="#EF4444", line_width=3,
-                       annotation_text=f"this design {my_whkg:.0f}")
-        figC.add_vline(x=68.5, line_color="#D97706", line_dash="dot",
-                       annotation_text="HPB80")
-        figC.update_layout(height=380, xaxis_title="Wh/kg",
-                           title="Top of the field vs this design")
-        st.plotly_chart(figC, use_container_width=True, key="bm_C")
-    with st.expander("Cell-to-pack ratios and the full table"):
-        vm = bm.dropna(subset=["ctp_m"]).sort_values("ctp_m")
-        figD = go.Figure(go.Bar(x=vm["model"], y=100 * vm["ctp_m"],
-                                marker_color="#0EA5E9"))
-        figD.add_hline(y=100 * masses["m_cells"] / masses["m_pack"],
-                       line_color="#EF4444", line_width=3,
-                       annotation_text=f"this design "
-                       f"{100*masses['m_cells']/masses['m_pack']:.0f}%")
-        figD.update_layout(height=320, yaxis_title="cell mass / pack mass [%]",
-                           title="Cell-to-pack mass ratio (higher = less "
-                                 "overhead)", xaxis_tickangle=-40)
-        st.plotly_chart(figD, use_container_width=True, key="bm_D")
-        show = v[["model", "E_use", "E_tot", "m_pack", "whkg", "whl",
-                  "P10s_kW", "C10s", "ctp_m", "V_pack"]].round(1)
-        st.dataframe(show, hide_index=True, use_container_width=True,
-                     height=340)
-        st.download_button("Download filtered set (.csv)",
-                           show.to_csv(index=False), "pack_benchmark_view.csv",
-                           key="bm_dl")
-    with st.expander("Explore any two quantities"):
-        NUMCOLS = {"Wh/kg": "whkg", "Wh/L": "whl", "Pack energy [kWh]": "E_tot",
-                   "Pack mass [kg]": "m_pack", "10 s power [kW]": "P10s_kW",
-                   "10 s C-rate": "C10s", "10 s W/kg": "kW_kg_10s",
-                   "Cell-to-pack mass": "ctp_m", "Pack volume [L]": "V_pack",
-                   "Capacity [Ah]": "cap_Ah"}
+
+    elif sub == "Rankings":
+        cC, cD = st.columns(2)
+        with cC:
+            vr = v.dropna(subset=["whkg"]).sort_values("whkg").tail(18)
+            figC = go.Figure(go.Bar(y=vr["model"], x=vr["whkg"],
+                                    orientation="h", marker_color="#94A3B8"))
+            figC.add_vline(x=my_whkg, line_color="#EF4444", line_width=3,
+                           annotation_text=f"this design {my_whkg:.0f}")
+            figC.add_vline(x=68.5, line_color="#D97706", line_dash="dot",
+                           annotation_text="HPB80")
+            figC.update_layout(height=460, xaxis_title="Wh/kg",
+                               title="Top of the field vs this design")
+            st.plotly_chart(figC, use_container_width=True, key="bm_C")
+        with cD:
+            vm = bm.dropna(subset=["ctp_m"]).sort_values("ctp_m")
+            figD = go.Figure(go.Bar(x=vm["model"], y=100 * vm["ctp_m"],
+                                    marker_color="#0EA5E9"))
+            figD.add_hline(y=100 * masses["m_cells"] / masses["m_pack"],
+                           line_color="#EF4444", line_width=3,
+                           annotation_text=f"this design "
+                           f"{100*masses['m_cells']/masses['m_pack']:.0f}%")
+            figD.update_layout(height=460,
+                               yaxis_title="cell mass / pack mass [%]",
+                               title="Cell-to-pack mass ratio",
+                               xaxis_tickangle=-40)
+            st.plotly_chart(figD, use_container_width=True, key="bm_D")
+
+    elif sub == "Explorer":
+        NUMCOLS = {"Wh/kg": "whkg", "Wh/L": "whl",
+                   "Pack energy [kWh]": "E_tot", "Pack mass [kg]": "m_pack",
+                   "10 s power [kW]": "P10s_kW", "10 s C-rate": "C10s",
+                   "10 s W/kg": "kW_kg_10s", "Cell-to-pack mass": "ctp_m",
+                   "Pack volume [L]": "V_pack", "Capacity [Ah]": "cap_Ah"}
         e1, e2, e3, e4 = st.columns([1.2, 1.2, 0.7, 0.9])
         xk = e1.selectbox("X", list(NUMCOLS), 2, key="bm_x")
         yk = e2.selectbox("Y", list(NUMCOLS), 0, key="bm_y")
@@ -3620,9 +3639,11 @@ def benchmark_db_tab(d, g, masses, Cmax, res):
         ve = v.dropna(subset=[NUMCOLS[xk], NUMCOLS[yk]])
         figE = go.Figure()
         for gname, gg_ in ve.groupby("grp"):
-            figE.add_trace(go.Scatter(x=gg_[NUMCOLS[xk]], y=gg_[NUMCOLS[yk]],
-                                      mode="markers", name=gname,
-                                      marker=dict(size=9, color=GRP_C[gname],
+            figE.add_trace(go.Scatter(x=gg_[NUMCOLS[xk]],
+                                      y=gg_[NUMCOLS[yk]], mode="markers",
+                                      name=gname,
+                                      marker=dict(size=9,
+                                                  color=GRP_C[gname],
                                                   opacity=0.85),
                                       hovertext=gg_["model"],
                                       hoverinfo="text+x+y"))
@@ -3630,9 +3651,11 @@ def benchmark_db_tab(d, g, masses, Cmax, res):
             xx = np.log10(ve[NUMCOLS[xk]]) if logx else ve[NUMCOLS[xk]]
             a1, a0 = np.polyfit(xx, ve[NUMCOLS[yk]], 1)
             xs_ = np.linspace(xx.min(), xx.max(), 40)
-            figE.add_trace(go.Scatter(
-                x=10 ** xs_ if logx else xs_, y=a0 + a1 * xs_, mode="lines",
-                name="trend", line=dict(color="#64748B", dash="dash")))
+            figE.add_trace(go.Scatter(x=10 ** xs_ if logx else xs_,
+                                      y=a0 + a1 * xs_, mode="lines",
+                                      name="trend",
+                                      line=dict(color="#64748B",
+                                                dash="dash")))
         mine = {"whkg": my_whkg, "whl": my_whl, "E_tot": masses["E_kwh"],
                 "m_pack": masses["m_pack"],
                 "ctp_m": masses["m_cells"] / masses["m_pack"],
@@ -3640,37 +3663,39 @@ def benchmark_db_tab(d, g, masses, Cmax, res):
         if NUMCOLS[xk] in mine and NUMCOLS[yk] in mine:
             figE.add_trace(go.Scatter(x=[mine[NUMCOLS[xk]]],
                                       y=[mine[NUMCOLS[yk]]],
-                                      mode="markers+text", text=["This design"],
+                                      mode="markers+text",
+                                      text=["This design"],
                                       textposition="top center",
+                                      name="This design",
                                       marker=dict(symbol="star", size=18,
-                                                  color="#EF4444"),
-                                      name="This design"))
-        figE.update_layout(height=380, xaxis_title=xk, yaxis_title=yk,
+                                                  color="#EF4444")))
+        figE.update_layout(height=460, xaxis_title=xk, yaxis_title=yk,
                            xaxis_type="log" if logx else "linear",
-                           legend=dict(orientation="h", y=1.14))
+                           legend=dict(orientation="h", y=1.12))
         st.plotly_chart(figE, use_container_width=True, key="bm_E",
                         config=PLOTCFG)
 
-    with st.expander("Head-to-head: pick packs to duel this design"):
+    elif sub == "Head-to-head":
         opts = bm.dropna(subset=["whkg", "whl"])["model"].tolist()
-        pick = st.multiselect("Packs", opts,
+        pick = st.multiselect("Pick up to four packs to duel this design",
+                              opts,
                               default=[o for o in opts if "Model 3" in o][:1]
                               or opts[:1], max_selections=4, key="bm_duel")
-        METRICS = [("Wh/kg", "whkg", my_whkg),
-                   ("Wh/L", "whl", my_whl),
+        METRICS = [("Wh/kg", "whkg", my_whkg), ("Wh/L", "whl", my_whl),
                    ("kWh", "E_tot", masses["E_kwh"]),
                    ("10 s W/kg", "kW_kg_10s",
                     Cmax * masses["E_kwh"] * 1000 / masses["m_pack"]),
                    ("Cell-to-pack %", "ctp_m",
                     masses["m_cells"] / masses["m_pack"])]
-        figH = go.Figure()
         cats = [m_[0] for m_ in METRICS]
         def _norm(key, val):
             s = bm[key].dropna()
             rng = max(s.max() - s.min(), 1e-9)
             return max(min((val - s.min()) / rng, 1.05), 0.0)
+        figH = go.Figure()
         figH.add_trace(go.Scatterpolar(
-            r=[_norm(k, mv) for _, k, mv in METRICS] + [_norm("whkg", my_whkg)],
+            r=[_norm(k, mv) for _, k, mv in METRICS]
+              + [_norm("whkg", my_whkg)],
             theta=cats + [cats[0]], name="This design",
             line=dict(color="#EF4444", width=3), fill="toself",
             fillcolor="rgba(239,68,68,0.10)"))
@@ -3678,31 +3703,40 @@ def benchmark_db_tab(d, g, masses, Cmax, res):
             row = bm[bm["model"] == pm].iloc[0]
             rr = [_norm(k, row[k]) if row[k] == row[k] else 0
                   for _, k, _ in METRICS]
-            figH.add_trace(go.Scatterpolar(r=rr + [rr[0]], theta=cats + [cats[0]],
-                                           name=pm, fill="toself", opacity=0.75))
-        figH.update_layout(height=400, polar=dict(radialaxis=dict(
+            figH.add_trace(go.Scatterpolar(r=rr + [rr[0]],
+                                           theta=cats + [cats[0]],
+                                           name=pm, fill="toself",
+                                           opacity=0.75))
+        figH.update_layout(height=470, polar=dict(radialaxis=dict(
             visible=True, range=[0, 1.05], showticklabels=False)),
             legend=dict(orientation="h", y=-0.08),
-            title="Normalised to the database range (outer edge = best in "
-                  "file). This design's power axis is continuous, theirs "
-                  "is 10 s.")
+            title="Normalised to the database range - outer edge = best in "
+                  "file; this design's power axis is continuous, theirs 10 s")
         st.plotly_chart(figH, use_container_width=True, key="bm_H")
+
+    else:
+        show = v[["model", "E_use", "E_tot", "m_pack", "whkg", "whl",
+                  "P10s_kW", "C10s", "ctp_m", "V_pack"]].round(1)
+        st.dataframe(show, hide_index=True, use_container_width=True,
+                     height=460)
+        st.download_button("Download filtered set (.csv)",
+                           show.to_csv(index=False),
+                           "pack_benchmark_view.csv", key="bm_dl")
 
     near = bm.dropna(subset=["whkg", "whl"]).copy()
     near["dist"] = np.hypot((near["whkg"] - my_whkg) / bm["whkg"].std(),
                             (near["whl"] - my_whl) / bm["whl"].std())
     nn = near.nsmallest(3, "dist")["model"].tolist()
-    st.markdown(f"**Where this design sits:** {my_whkg:.0f} Wh/kg puts it at "
-                f"the **{_pct(bm['whkg'], my_whkg):.0f}th percentile** of BEV "
-                f"road-car packs and {my_whl:.0f} Wh/L at the "
-                f"**{_pct(bm['whl'], my_whl):.0f}th**; its nearest neighbours "
-                f"in the database are {', '.join(nn)}. The gap to the field "
-                "is the immersion tax: oil "
-                f"({masses['m_oil']:.0f} kg) and the pressure-rated enclosure "
-                f"({masses['m_struct']:.0f} kg). The counter-argument this "
-                "database cannot show is thermal: abuse tolerance, "
-                "uniformity, and the flywheel.")
-    return figA
+    st.markdown(f"**Where this design sits:** {my_whkg:.0f} Wh/kg is the "
+                f"**{_pct(bm['whkg'], my_whkg):.0f}th percentile** of these "
+                f"packs and {my_whl:.0f} Wh/L the "
+                f"**{_pct(bm['whl'], my_whl):.0f}th**; nearest neighbours: "
+                f"{', '.join(nn)}. The gap is the immersion tax - oil "
+                f"({masses['m_oil']:.0f} kg) and the pressure-rated "
+                f"enclosure ({masses['m_struct']:.0f} kg). What this file "
+                "cannot show is the thermal case: abuse tolerance, "
+                "uniformity, the flywheel.")
+    return st.session_state.get("bm_figA")
 
 def report_sections(d, g, fl, res, masses, tr, spec, Cmax, C_steady, Q_duty,
                     Q_bus, P_pump, P_stir, chil, figs):

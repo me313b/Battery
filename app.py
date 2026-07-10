@@ -17,7 +17,7 @@
 #  Run:  streamlit run app.py       Smoke test:  SMOKE=1 python app.py
 # =====================================================================
 
-import os, math
+import os, math, contextlib
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -73,7 +73,7 @@ def fluid_dict(row) -> dict:
                 dielectric=bool(row["dielectric"]))
 
 def nu_of_T(fl: dict, T_C: float) -> float:
-    """Andrade-type viscosity-temperature law anchored at 25 degC.
+    """Andrade-type viscosity-temperature law anchored at 25 °C.
     nu(T) = nu25 * exp(B*(1/T - 1/298.15)), T in K. B set per fluid family
     (mineral/ester ~3200 K fitted to transformer-oil data in [1] Table 3)."""
     T = max(T_C, -30.0) + KELVIN
@@ -86,7 +86,7 @@ def film_props(fl: dict, T_film_C: float) -> dict:
     return dict(k=fl["k"], rho=fl["rho"], cp=fl["cp"], nu=nu,
                 alpha=alpha, Pr=nu / alpha, beta=fl["beta"])
 
-# Water-loop fluids (inside the tubes), properties near 20-25 degC
+# Water-loop fluids (inside the tubes), properties near 20-25 °C
 WATER_LOOP = {
     "Water": dict(rho=998.0, cp=4182.0, k=0.60, mu=1.0e-3),
     "Water-glycol 50/50": dict(rho=1070.0, cp=3300.0, k=0.37, mu=3.8e-3),
@@ -239,7 +239,7 @@ def build_geometry(d: dict) -> dict:
 
     free_per_cell = max(p * row_pitch - math.pi * D ** 2 / 4, 1e-6)
     blk = 1.0 - d.get("holder_block", 0.0)           # cell-holder blockage
-    A_flow = N * free_per_cell * blk                 # riser flow area, m2
+    A_flow = N * free_per_cell * blk                 # riser flow area, m²
     D_h = 4.0 * free_per_cell / (math.pi * D) * math.sqrt(max(blk, 0.05))
 
     return dict(N=N, gap_mm=gap, n_cols=n_cols, n_rows=n_rows,
@@ -274,13 +274,15 @@ def build_masses(d, g, fl, finres) -> dict:
     m_struct = d["struct_mass"] if d["struct_mass"] > 0 else enc["m"]
     m_holders = g["N"] * d["m_holder_g"] / 1000.0
     m_bus = busbar_props(d, g)["m"]
-    m_pack = m_cells + m_oil + m_tubes + m_fins + m_struct + m_holders + m_bus
+    m_plates = plate_fin_area(d, g, 100.0)[2] if d.get("plate_on") else 0.0
+    m_pack = m_cells + m_oil + m_tubes + m_fins + m_struct + m_holders + m_bus \
+             + m_plates
     E_kwh = d["Ns"] * d["Np"] * d["v_nom"] * d["cap_Ah"] / 1000.0
     V_outer_L = (g["Lx"] + 2 * enc["t_mm"] / 1000) * (g["Ly"] + 2 * enc["t_mm"] / 1000) \
                 * (g["Lz"] + 2 * enc["t_mm"] / 1000) * 1000
     return dict(V_oil_L=V_oil * 1000, m_oil=m_oil, m_cells=m_cells,
                 m_tubes=m_tubes, m_fins=m_fins, m_struct=m_struct,
-                m_holders=m_holders, m_bus=m_bus, enc=enc,
+                m_holders=m_holders, m_bus=m_bus, m_plates=m_plates, enc=enc,
                 m_pack=m_pack, E_kwh=E_kwh, V_outer_L=V_outer_L,
                 whkg_pack=E_kwh * 1000 / m_pack,
                 whkg_cells=E_kwh * 1000 / m_cells,
@@ -331,11 +333,15 @@ def solve_steady(d, g, fl, Q_total, T_amb, C_rate=None) -> dict:
             fin = fin_pack(d["tube_od"], d["fin_h"], d["fin_t"], d["fin_p"],
                            205.0 if d["fin_mat"] == "Aluminium" else 385.0, tube0["h"])
             A_oilside = fin["A_eff_per_m"] * g["L_tube"] * d["n_tubes"]
+            A_pl, eta_pl, _mpl = plate_fin_area(d, g, ch * tube0["h"])
+            A_oilside += A_pl
         else:
             fin = dict(A_eff_per_m=math.pi * d["tube_od"], eta=1.0, area_gain=1.0,
                        fin_metal_vol_per_m=0.0, fin_gap=1.0, A_fin_per_m=0.0,
                        A_bare_per_m=math.pi * d["tube_od"])
             A_oilside = g["A_tube_bare"]
+            A_pl, eta_pl, _mpl = plate_fin_area(d, g, ch * tube0["h"])
+            A_oilside += A_pl
         R_b = 1.0 / max(cell["h"] * g["A_cells"], 1e-9)
         R_ot = 1.0 / max(tube0["h"] * A_oilside, 1e-9)
         R_chain = R_ot + R_wall + R_in
@@ -358,7 +364,7 @@ def solve_steady(d, g, fl, Q_total, T_amb, C_rate=None) -> dict:
     Q_cell = Q_total / g["N"]
     T_core = T_b + Q_cell * r_core(d)
     dT_water = Q_total / max(mdot_tot * loop["cp"], 1e-9)
-    if d.get("tube_plane") == "Interstitial (between rows)":
+    if d.get("tube_plane") == "Interstitial (between rows)" or d.get("plate_on"):
         dT_loop *= 0.35                          # distributed sinks
     dT_pos = 0.5 * dT_water + 0.5 * dT_loop     # worst-position penalty
     return dict(T_b=T_b, T_il=T_il, T_wall=T_wall,
@@ -371,14 +377,14 @@ def solve_steady(d, g, fl, Q_total, T_amb, C_rate=None) -> dict:
                 h_tube=tube["h"], h_tube_nat=tube["h_nat"], h_tube_for=tube["h_for"],
                 Ra_tube=tube["Ra"],
                 h_water=wat["h"], Re_water=wat["Re"], water_regime=wat["regime"],
-                A_oilside=A_oilside, fin=fin,
+                A_oilside=A_oilside, A_plate=A_pl, eta_plate=eta_pl, fin=fin,
                 dT_water=Q_total / max(mdot_tot * loop["cp"], 1e-9),
                 mdot_tot=mdot_tot, Q_w=Q_w, Q_atm=Q_atm,
                 gapf=gap_factor(g["gap_mm"]))
 
 def r_of_T(d, T_cell_C: float) -> float:
-    """Cell DCIR in mOhm at temperature T. Exponential fall with T
-    (default -1.2 %/K around 25 degC) - the reason AMG run a 45 degC
+    """Cell DCIR in mΩ at temperature T. Exponential fall with T
+    (default -1.2 %/K around 25 °C) - the reason AMG run a 45 °C
     set point. Set k_dcir = 0 to disable the coupling."""
     return d["r_dc"] * math.exp(-d.get("k_dcir", 0.0) * (T_cell_C - 25.0))
 
@@ -425,7 +431,7 @@ def thermosiphon_u(d, g, fl, Q: float, T_oil_C: float):
 
 def q_gen_per_cell(d, C_rate, T_cell_C: float = 25.0) -> float:
     I = C_rate * d["cap_Ah"]
-    return I * I * r_of_T(d, T_cell_C) * 1e-3   # DCIR in mOhm
+    return I * I * r_of_T(d, T_cell_C) * 1e-3   # DCIR in mΩ
 
 def max_continuous_C(d, g, fl, T_amb, T_limit) -> float:
     lo, hi = 0.05, 12.0
@@ -517,7 +523,7 @@ def benchmark_wang() -> dict:
     N_t, d_o, d_i, L_t = 4, 0.006, 0.005, 0.222
     A_ot = math.pi * d_o * L_t * N_t          # 0.0167 m2, matches paper
     A_in = math.pi * d_i * L_t * N_t
-    loop = dict(rho=1000.0, cp=4200.0, k=0.58, mu=1.3e-3)  # water ~8 degC
+    loop = dict(rho=1000.0, cp=4200.0, k=0.58, mu=1.3e-3)  # water ~8 °C
     mdot = 17.1e-6 * 1000.0
     wat = h_water_inside(loop, mdot / N_t, d_i, L_t)
     R_in = 1.0 / (wat["h"] * A_in)
@@ -545,14 +551,14 @@ def benchmark_wang() -> dict:
         T_il[i] = T_il[i-1] + 2.0 * (Q_bi - Q_w - Q_a) / C_il
         hb_last, ht_last = hb, ht
     rows = [
-        ("h battery-to-oil  [W/m2K]", f"{hb_last:.0f}", "~80-110 (Fig. 11b, measured)"),
-        ("h oil-to-tube  [W/m2K]", f"{ht_last:.0f}", "~170-270 (Fig. 11b, measured)"),
+        ("h battery-to-oil  [W/m²·K]", f"{hb_last:.0f}", "~80-110 (Fig. 11b, measured)"),
+        ("h oil-to-tube  [W/m²·K]", f"{ht_last:.0f}", "~170-270 (Fig. 11b, measured)"),
         ("R battery-oil  [K/W]", f"{1.0/(hb_last*A_cells):.3f}", "0.04 (Table 6)"),
         ("R oil-tube  [K/W]", f"{1.0/(ht_last*A_ot):.2f}", "0.30 (Table 6)"),
         ("R water film  [K/W]", f"{R_in:.3f}", "0.06 (Table 6)"),
         ("R tube wall  [K/W]", f"{R_wall:.5f}", "0.0005 (Table 6)"),
-        ("T battery at 1800 s  [degC]", f"{T_b[-1]:.1f}", "~32.3 (Fig. 5/6, measured)"),
-        ("T oil at 1800 s  [degC]", f"{T_il[-1]:.1f}", "~28.5 (Fig. 8b)"),
+        ("T battery at 1800 s  [°C]", f"{T_b[-1]:.1f}", "~32.3 (Fig. 5/6, measured)"),
+        ("T oil at 1800 s  [°C]", f"{T_il[-1]:.1f}", "~28.5 (Fig. 8b)"),
         ("dT battery-oil plateau [K]", f"{T_b[-1]-T_il[-1]:.1f}", "~3.2 (Fig. 8b)"),
     ]
     return dict(rows=rows, t=t, T_b=T_b, T_il=T_il)
@@ -603,19 +609,19 @@ def diagnose(d, g, fl, masses, res, T_limit, Q) -> list:
         msgs.append(("warn", f"Cell gap {g['gap_mm']:.1f} mm < 6 mm: buoyant flow in the gaps "
                      f"is throttled (penalty factor {res['gapf']:.2f}, per Wang et al. Fig. 9)."))
     if res["T_b"] > T_limit:
-        msgs.append(("bad", f"Steady cell temperature {res['T_b']:.1f} degC exceeds the "
-                     f"{T_limit:.0f} degC limit at this duty. See sensitivity chart for the "
+        msgs.append(("bad", f"Steady cell temperature {res['T_b']:.1f} °C exceeds the "
+                     f"{T_limit:.0f} °C limit at this duty. See sensitivity chart for the "
                      "cheapest fix."))
     if not fl["dielectric"]:
         msgs.append(("bad", f"**{fl['name']} is not a dielectric.** Fine as a thermal reference "
                      "in this model, unusable as an immersion fluid in a live pack."))
     if not math.isnan(fl.get("bp", float("nan"))) and res["T_b"] + 10 > fl["bp"]:
         msgs.append(("warn", f"Cell temperature is within 10 K of the fluid boiling point "
-                     f"({fl['bp']:.0f} degC): you are entering two-phase territory (pressure "
+                     f"({fl['bp']:.0f} °C): you are entering two-phase territory (pressure "
                      "management needed)."))
     if not math.isnan(fl.get("flash", float("nan"))) and fl["flash"] < 120:
-        msgs.append(("warn", f"Flash point {fl['flash']:.0f} degC is low for a lithium pack; "
-                     "prefer > 150 degC (ester class)."))
+        msgs.append(("warn", f"Flash point {fl['flash']:.0f} °C is low for a lithium pack; "
+                     "prefer > 150 °C (ester class)."))
     if d["fins_on"] and res["fin"]["fin_gap"] < 0.004 and d["u_oil"] < 0.005:
         msgs.append(("warn", "Fin gap < 4 mm with still oil: natural-convection boundary "
                      "layers will merge between fins and the Schmidt-efficiency estimate "
@@ -624,7 +630,7 @@ def diagnose(d, g, fl, masses, res, T_limit, Q) -> list:
         msgs.append(("info", f"Oil is {100*masses['m_oil']/masses['m_pack']:.0f}% of pack mass. "
                      "Reduce headspace/tube-zone height, or accept it as buffer thermal mass."))
     exp_L = fl["beta"] * masses["V_oil_L"] * (d.get("T_service_max", 60) - (-10))
-    msgs.append(("info", f"Thermal expansion over -10 to {d.get('T_service_max',60):.0f} degC: "
+    msgs.append(("info", f"Thermal expansion over -10 to {d.get('T_service_max',60):.0f} °C: "
                  f"~{exp_L:.1f} L. Size a bellows/bladder for this; do not leave a free air "
                  "headspace (moisture, tilt)."))
     msgs.append(("info", "Water-in-oil leak is the single-point failure: keep oil static "
@@ -723,7 +729,22 @@ CSS = f"""
   [data-testid="stProgress"] > div > div > div {{
       background: linear-gradient(90deg,{BRAND_A},{BRAND_B}); }}
   .small-note {{ color:#64748B; font-size:0.84rem; }}
+  /* silk: transitions + hover lift */
+  [data-testid="stVerticalBlockBorderWrapper"], .kpi, .stButton > button,
+  .stTabs [data-baseweb="tab"] {{ transition: box-shadow .18s ease,
+      transform .18s ease, background .18s ease; }}
+  [data-testid="stVerticalBlockBorderWrapper"]:hover, .kpi:hover {{
+      box-shadow: 0 6px 18px rgba(16,24,40,.10); transform: translateY(-1px); }}
+  .stTabs [data-baseweb="tab"]:hover {{ background:#F1F5F9; }}
+  ::-webkit-scrollbar {{ width: 8px; height: 8px; }}
+  ::-webkit-scrollbar-thumb {{ background:#CBD5E1; border-radius: 8px; }}
+  /* sticky live design panel */
+  .st-key-liveview {{ position: sticky; top: 3.4rem; z-index: 3; }}
 </style>"""
+
+PLOTCFG = dict(displaylogo=False,
+               modeBarButtonsToAdd=["drawline", "drawrect", "eraseshape",
+                                    "toggleSpikelines"])
 
 def kpi_cards(items):
     """items: list of (label, value, sub, tone in '', 'ok', 'bad', 'brand')."""
@@ -755,6 +776,8 @@ DEFAULTS = dict(
     cyc_rest=600.0, n_cyc=3,
     R_bus=0.0, bus_J=5.0, m_holder_g=8.0, holder_block=0.20,
     sigma_MPa=80.0, stiff=0.45, p_des_bar=0.5,
+    circ="Thermosiphon only", plate_on=False, plate_t=0.0015,
+    plate_mat="Aluminium", plate_contact=0.8, u_guided=0.05,
     veh_m=1900.0, CdA=0.62, Crr=0.009, eta_dt=0.92, eta_rg=0.65,
     P_rg=60.0, P_acc=500.0, cycle="WLTP Class 3b", repeat_cyc=True,
 )
@@ -791,8 +814,8 @@ def waterfall_chart(res, Q, d):
         increasing=dict(marker=dict(color=ACCENT)),
         totals=dict(marker=dict(color=INK))))
     fig.update_layout(height=330, margin=dict(l=10, r=10, t=30, b=10),
-                      title="Temperature waterfall at this duty [degC]",
-                      yaxis_title="degC", plot_bgcolor="rgba(255,255,255,0)",
+                      title="Temperature waterfall at this duty [°C]",
+                      yaxis_title="°C", plot_bgcolor="rgba(255,255,255,0)",
                       paper_bgcolor="rgba(0,0,0,0)", showlegend=False)
     return fig
 
@@ -849,6 +872,40 @@ def stirrer_power(d, g, fl, u, T_oil=35.0) -> float:
     dp = 32.0 * p["rho"] * p["nu"] * (2.2 * g["fill_h"]) * u / g["D_h"] ** 2 \
          + d.get("K_loop", 5.0) * 0.5 * p["rho"] * u ** 2
     return dp * (u * g["A_flow"]) / 0.30
+
+def plate_fin_area(d, g, h_oil):
+    """Effective wetted area of thin plates hung from the tubes between cell
+    rows (both sides wetted, conduction only). Fin: eta = tanh(mL)/mL,
+    m = sqrt(2h/(k t)); base contact to the tube derated by plate_contact."""
+    if not d.get("plate_on"):
+        return 0.0, 0.0, 0.0
+    k = 205.0 if d.get("plate_mat", "Aluminium") == "Aluminium" else 380.0
+    t = d.get("plate_t", 0.0015)
+    L = d["h_cell"]
+    m = math.sqrt(2.0 * max(h_oil, 5.0) / (k * t))
+    eta = math.tanh(m * L) / max(m * L, 1e-9)
+    n_pl = max(g["n_rows"] - 1, 1)
+    length = max(g["Lx"] - 2 * d["manifold_margin"], 0.1)
+    A_eff = n_pl * 2.0 * L * length * eta * d.get("plate_contact", 0.8)
+    m_pl = n_pl * L * length * t * (2700.0 if k < 300 else 8940.0)
+    return A_eff, eta, m_pl
+
+def serpentine_pump(d, g, fl, u, T_oil=35.0):
+    """Parallel row-channels guided by the plates: laminar slot flow,
+    Dp = 12 mu L u / s^2 per channel, all channels manifolded in parallel.
+    Returns pump electrical power, oil dT along a channel, and flow."""
+    if u <= 1e-6:
+        return dict(P=0.0, dT_path=0.0, mdot=0.0, dp=0.0)
+    p = film_props(fl, T_oil)
+    s = max((d["pitch"] - d["d_cell"] - d.get("plate_t", 0.0015)) / 2, 5e-4)
+    Lch = max(g["Lx"] - 2 * d["manifold_margin"], 0.1)
+    n_ch = max(g["n_rows"] - 1, 1) * 2            # both sides of each plate
+    A_ch = s * d["h_cell"]
+    dp = 12.0 * p["rho"] * p["nu"] * Lch * u / s ** 2 + 3.0 * 0.5 * p["rho"] * u ** 2
+    mdot = p["rho"] * u * A_ch * n_ch
+    P = dp * (mdot / p["rho"]) / 0.35
+    return dict(P=P, dT_path=0.0 if mdot < 1e-9 else 0.0, mdot=mdot, dp=dp,
+                dT_est=lambda Q: Q / max(mdot * p["cp"], 1e-9))
 
 # ------------------------------------------------------------------ #
 #  Architecture comparator                                            #
@@ -1000,7 +1057,7 @@ def arch_tab(d, g, fl, masses, C_steady):
                                     text=[f"{v:.1f}" for v in adf["T_cell"]],
                                     textposition="outside"))
             figA.add_hline(y=d["T_limit"], line_dash="dash", line_color="#B91C1C")
-            figA.update_layout(height=380, title="Steady cell temperature [degC]",
+            figA.update_layout(height=380, title="Steady cell temperature [°C]",
                                plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",
                                xaxis_tickangle=-15)
             st.plotly_chart(figA, use_container_width=True)
@@ -1014,7 +1071,7 @@ def arch_tab(d, g, fl, masses, C_steady):
                                xaxis_tickangle=-15)
             st.plotly_chart(figP, use_container_width=True)
         st.caption("Cold-plate constants: axial cell path ~3.6 K/W, TIM 0.8 K/W, channel film "
-                   "h = 3000 W/m2K - edit in code if you have better numbers. Pumped case: "
+                   "h = 3000 W/m²·K - edit in code if you have better numbers. Pumped case: "
                    "20 cm/s past cells, oil sized for 5 K rise, 30 kPa loop at 40% pump "
                    "efficiency, ~25 mL of fluid per cell (the HPB80 ratio). Kelvin per watt: "
                    "work the bottleneck, then buy the cheapest watts.")
@@ -1063,7 +1120,7 @@ def coolant_tab(d, g, cool_df):
         figS.update_layout(height=460, title="Cooler is down, lighter is left "
                            "(size ~ conductivity; hover for every fluid)",
                            xaxis_title="Coolant mass on board [kg]",
-                           yaxis_title="Steady cell temperature [degC]",
+                           yaxis_title="Steady cell temperature [°C]",
                            plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(figS, use_container_width=True)
         st.caption("The fluorinated fluids win on h despite 5x lower conductivity (Ra ~ 1/nu, "
@@ -1088,7 +1145,7 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop):
                      r"\approx 60\text{-}130\ \mathrm{W/m^2K}")
             st.markdown(
                 f"Right now your films give **h_cell = {res['h_cell']:.0f}** and "
-                f"**h_tube = {res['h_tube']:.0f} W/m2K**. Compare: 1.5 mm of stagnant oil has "
+                f"**h_tube = {res['h_tube']:.0f} W/m²·K**. Compare: 1.5 mm of stagnant oil has "
                 "about **4000x** the resistance of 1 mm of copper wall. Both R = 1/(hA), so "
                 "the fixes are exactly two: raise h (thin the film: stir, lower viscosity) or "
                 "raise A (fins, more tubes).")
@@ -1103,7 +1160,7 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop):
             Ra_p = rayleigh(pf, dT_p, L_p)
             h_p = nu_vertical_cc(Ra_p, pf["Pr"]) * pf["k"] / L_p
             st.markdown(f"**{fl['name']}**: Ra = {Ra_p:.2e} (laminar below ~1e9), Pr = "
-                        f"{pf['Pr']:.0f}, **h = {h_p:.0f} W/m2K**, and one 21700 sheds "
+                        f"{pf['Pr']:.0f}, **h = {h_p:.0f} W/m²·K**, and one 21700 sheds "
                         f"**{h_p * math.pi * 0.021 * 0.07 * dT_p:.1f} W** at that dT. Note "
                         "h ~ dT^(1/4): you cannot rescue a hot pack by letting it run hotter, "
                         "and h ~ (1/nu)^(1/4) via Ra, which is panel 3.")
@@ -1124,8 +1181,8 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop):
                             color=ks, colorscale="YlOrBr",
                             colorbar=dict(title="k [W/mK]"))))
             figV.update_layout(height=430, xaxis_type="log",
-                               xaxis_title="Kinematic viscosity at 25 degC [cSt] (log)",
-                               yaxis_title="Natural-convection h on a 21700 [W/m2K]",
+                               xaxis_title="Kinematic viscosity at 25 °C [cSt] (log)",
+                               yaxis_title="Natural-convection h on a 21700 [W/m²·K]",
                                title="Ra ~ 1/nu, h ~ Ra^(1/4-1/6): viscosity is the strong "
                                      "axis (hover for every fluid)",
                                plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)")
@@ -1190,7 +1247,7 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop):
             figU.add_vline(x=res["u_ts"] * 100, line_dash="dot", line_color="#10B981",
                            annotation_text=f"thermosiphon {res['u_ts']*1000:.1f} mm/s")
             figU.update_layout(height=320, xaxis_title="Oil velocity [cm/s]",
-                               yaxis_title="h [W/m2K]",
+                               yaxis_title="h [W/m²·K]",
                                title="The pack stirs itself a little; a circulator does it "
                                      "properly",
                                plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",
@@ -1215,7 +1272,7 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop):
             figW.add_vline(x=fls[i2300], line_dash="dot", line_color="#B91C1C",
                            annotation_text="Re 2300")
             figW.update_layout(height=320, xaxis_title="Total water flow [L/min]",
-                               yaxis_title="h inside tube [W/m2K]",
+                               yaxis_title="h inside tube [W/m²·K]",
                                title="In laminar flow Nu is ~constant: pumping harder does "
                                      "nothing until you trip turbulence",
                                plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)")
@@ -1236,14 +1293,14 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop):
             figD = go.Figure(go.Scatter(x=Ts, y=[r_of_T(d, t) for t in Ts],
                                         line=dict(color=INK, width=3)))
             figD.add_vline(x=res["T_b"], line_dash="dash", annotation_text="your cell")
-            figD.update_layout(height=300, xaxis_title="Cell temperature [degC]",
-                               yaxis_title="DCIR [mOhm]",
+            figD.update_layout(height=300, xaxis_title="Cell temperature [°C]",
+                               yaxis_title="DCIR [mΩ]",
                                title=f"R(T) = R25 exp(-{d['k_dcir']*100:.1f}%/K x (T-25))",
                                plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)")
             st.plotly_chart(figD, use_container_width=True)
-            st.markdown(f"Running at {res['T_b']:.0f} degC instead of 25 cuts heat generation "
+            st.markdown(f"Running at {res['T_b']:.0f} °C instead of 25 cuts heat generation "
                         f"by **{100*(1-r_of_T(d, res['T_b'])/d['r_dc']):.0f}%** at the same "
-                        "current - the AMG 45 degC set-point logic, and why the transient "
+                        "current - the AMG 45 °C set-point logic, and why the transient "
                         "self-stabilises near the limit. Separately, the core runs "
                         f"**{res['dT_core']:.1f} K** above the can here "
                         f"(R_core = 1/(4 pi k_r H) = {r_core(d):.2f} K/W): no coolant choice "
@@ -1254,7 +1311,7 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop):
   pressure** so leaks go oil-to-water, or double-walled tubes with leak detection
   (transformer practice).
 * **Expansion**: beta = {fl['beta']:.1e} /K on {masses['V_oil_L']:.0f} L means
-  ~{fl['beta']*masses['V_oil_L']*70:.1f} L over a -10 to 60 degC band. Bellows or bladder,
+  ~{fl['beta']*masses['V_oil_L']*70:.1f} L over a -10 to 60 °C band. Bellows or bladder,
   not free air.
 * **Materials**: seal/insulation compatibility, ester moisture uptake, copper oxidation
   catalysis (use inhibited fluids or plated tubes).
@@ -1264,7 +1321,7 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop):
 * **Fluid supply**: 3M exited PFAS manufacture end-2025; anchor the programme on esters.
 * **Mercedes AMG HPB80** (batterydesign.net): 560 x 21700, 112S5P, 6.1 kWh, 89 kg,
   68.5 Wh/kg, 150 kW peak / 70 kW continuous, pumped dielectric (14 L) through an external
-  dielectric-to-water HX, 10 kW cooling, 45 degC set point.
+  dielectric-to-water HX, 10 kW cooling, 45 °C set point.
 * **Sources**: Wang et al. 2023 (J. Energy Storage 62, 106821); Zou et al. 2024 (J. Energy
   Storage 83, 110634); Roe et al. 2022 (J. Power Sources 525, 231094); batterydesign.net;
   coolant_comparison_reviewed.xlsx.
@@ -1290,8 +1347,8 @@ def improve_core(d, g, fl, masses, res, Q_duty, C_steady, cool_df):
                 text=[f"{v:+.1f} K" for v in sens["dT"]], textposition="outside"))
             figSe.add_vline(x=0, line_color=INK)
             figSe.update_layout(height=380, title=f"Change in steady cell T from "
-                                f"{base_T:.1f} degC at {C_steady:.2f}C rms (left = cooler)",
-                                xaxis_title="dT_cell [K]", plot_bgcolor="rgba(255,255,255,0)",
+                                f"{base_T:.1f} °C at {C_steady:.2f}C rms (left = cooler)",
+                                xaxis_title="ΔT_cell [K]", plot_bgcolor="rgba(255,255,255,0)",
                                 paper_bgcolor="rgba(0,0,0,0)",
                                 margin=dict(l=10, r=60, t=40, b=10))
             st.plotly_chart(figSe, use_container_width=True)
@@ -1305,18 +1362,18 @@ def improve_core(d, g, fl, masses, res, Q_duty, C_steady, cool_df):
                         xstar, Tst = goal_seek(d, fl, key, lo_, hi_, isint,
                                                d["T_amb"], C_steady, d["T_limit"], inv)
                     if xstar is None:
-                        st.error(f"This lever alone cannot reach {d['T_limit']:.0f} degC "
-                                 f"(best achievable ~{Tst:.1f} degC). Combine levers.")
+                        st.error(f"This lever alone cannot reach {d['T_limit']:.0f} °C "
+                                 f"(best achievable ~{Tst:.1f} °C). Combine levers.")
                     else:
                         shown = xstar * 1000 if key == "pitch" else xstar
-                        st.success(f"{gl} = **{shown:.2f}** gives {Tst:.1f} degC at "
+                        st.success(f"{gl} = **{shown:.2f}** gives {Tst:.1f} °C at "
                                    f"{C_steady:.2f}C rms. Set it in the sidebar to adopt.")
 
             with st.expander("Two-lever sweep (heatmap)"):
                 AXES = {"Water flow [L/min]": ("flow_lpm", 2.0, 40.0),
                         "Number of tubes": ("n_tubes", 4, 40),
                         "Stirring [m/s]": ("u_oil", 0.0, 0.12),
-                        "Water inlet [degC]": ("T_water_in", 5.0, 35.0),
+                        "Water inlet [°C]": ("T_water_in", 5.0, 35.0),
                         "Cell pitch [mm]": ("pitch", 0.023, 0.033)}
                 cx, cy = st.columns(2)
                 ax_x = cx.selectbox("X axis", list(AXES), 0)
@@ -1338,14 +1395,14 @@ def improve_core(d, g, fl, masses, res, Q_duty, C_steady, cool_df):
                     xs_d = xs * 1000 if kx == "pitch" else xs
                     ys_d = ys * 1000 if ky == "pitch" else ys
                     figH = go.Figure(go.Heatmap(x=xs_d, y=ys_d, z=Z, colorscale="RdYlBu_r",
-                                                colorbar=dict(title="T_cell [degC]")))
+                                                colorbar=dict(title="T_cell [°C]")))
                     figH.add_contour(x=xs_d, y=ys_d, z=Z, showscale=False,
                                      contours=dict(start=d["T_limit"], end=d["T_limit"],
                                                    coloring="lines"),
                                      line=dict(color="black", width=3))
                     figH.update_layout(height=460, xaxis_title=ax_x, yaxis_title=ax_y,
                                        title=f"Steady cell T at {C_steady:.2f}C rms - black "
-                                             f"contour = {d['T_limit']:.0f} degC limit")
+                                             f"contour = {d['T_limit']:.0f} °C limit")
                     st.plotly_chart(figH, use_container_width=True)
 
 
@@ -1370,11 +1427,11 @@ def runaway_ui(d, g, fl, masses, res):
                 verdict = ("looks containable" if margin > 30
                            else "MARGINAL - add spacing, oil, or interstitial barriers")
                 st.markdown(f"""
-One cell lets go at {res['T_b']:.0f} degC operating temperature:
+One cell lets go at {res['T_b']:.0f} °C operating temperature:
 
 * Local zone ({d['zone_pitches']:.1f} pitches): **{rw['V_zone_L']:.1f} L of oil +
   {rw['n_in']:.0f} neighbour cells** -> zone rise **{rw['dT_zone']:.0f} K**, i.e.
-  neighbours reach ~**{res['T_b']+rw['dT_zone']:.0f} degC** vs a ~170-200 degC trigger
+  neighbours reach ~**{res['T_b']+rw['dT_zone']:.0f} °C** vs a ~170-200 °C trigger
   (margin {margin:+.0f} K, before venting jets - {verdict}).
 * Spread over the whole pack it is only **{rw['dT_bulk']:.1f} K** - the flooded pack's
   big argument.
@@ -1390,8 +1447,8 @@ def bench_wang_tab():
     if True:
         st.markdown("The same correlations and two-node network, applied to the **exact rig "
                     "of Wang et al. (2023)**: six prismatic dummy cells (148 x 97 x 27 mm) in "
-                    "transformer oil, four 6 mm copper tubes at the top, 5 degC water at "
-                    "17.1 mL/s, 2C for 1800 s, 25 degC ambient. Fixed heater power, no "
+                    "transformer oil, four 6 mm copper tubes at the top, 5 °C water at "
+                    "17.1 mL/s, 2C for 1800 s, 25 °C ambient. Fixed heater power, no "
                     "DCIR(T), calibration factor 1.0.")
         bm = benchmark_wang()
         st.dataframe(pd.DataFrame(bm["rows"], columns=["Quantity", "This app", "Paper"]),
@@ -1408,7 +1465,7 @@ def bench_wang_tab():
                                   name="Paper: oil at 1800 s",
                                   marker=dict(color="#D97706", size=12, symbol="x")))
         figB.update_layout(height=380, xaxis_title="Time [min]",
-                           yaxis_title="Temperature [degC]",
+                           yaxis_title="Temperature [°C]",
                            title="Transient rebuild of the paper's 2C experiment",
                            plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",
                            legend=dict(orientation="h", y=1.12))
@@ -1534,13 +1591,13 @@ def smoke():
     pk_cold = -tr_cd["C"].min()
     pk_early = -tr_cd["C"][: 40].min()          # first 80 s while still cold
     i08 = int(np.argmax(-tr_cd["C"] > 0.8))
-    print(f"CC-CV 5degC start: first-80s chg {pk_early:.2f}C (plating cap "
-          f"{plating_frac(5.0)*d['C_chg']:.2f}C at 5 degC); self-heats to 0.8C "
+    print(f"CC-CV 5°C start: first-80s chg {pk_early:.2f}C (plating cap "
+          f"{plating_frac(5.0)*d['C_chg']:.2f}C at 5 °C); self-heats to 0.8C "
           f"by t={tr_cd['t'][i08]/60:.0f} min; run peak {pk_cold:.2f}C")
     assert pk_early < 0.35 * d["C_chg"] and pk_cold > pk_early
     xs_, Ts_ = goal_seek(d, fl, "flow_lpm", 0.5, 60.0, False, d["T_amb"], 2.0,
                          d["T_limit"], False)
-    print(f"goal-seek flow for {d['T_limit']:.0f} degC at 2C: {xs_ if xs_ is None else round(xs_,1)} L/min -> {Ts_:.1f}")
+    print(f"goal-seek flow for {d['T_limit']:.0f} °C at 2C: {xs_ if xs_ is None else round(xs_,1)} L/min -> {Ts_:.1f}")
     html = report_html(d, g, fl, res, masses, Cmax, [])
     assert "<html" in html and len(html) > 1500
     adf2 = compare_architectures(d, g, fl, masses, d["T_amb"], 2.0)
@@ -1566,11 +1623,11 @@ def smoke():
     sts, totdT = station_list(d, g, fl, res, masses, Q, Q_bus, 0.1, 0.0, ch)
     assert len(sts) == 7 and totdT > 5
     sc = scale_to_C(d, g, fl, masses, d["T_amb"], 4.0)
-    print(f"scale-to-4C: T_b={sc['r0']['T_b']:.1f} degC  heat "
+    print(f"scale-to-4C: T_b={sc['r0']['T_b']:.1f} °C  heat "
           f"{sc['r0']['Q_eff']/1000:.2f} kW  chiller {sc['chiller']['P_el']/1000:.2f} kW el")
     for nm, x, T in sc["fixes"]:
         print(f"   4C single lever {nm:<28s} "
-              f"{'insufficient alone' if x is None else f'{x:.2f} -> {T:.1f} degC'}")
+              f"{'insufficient alone' if x is None else f'{x:.2f} -> {T:.1f} °C'}")
     c_sweep_fig(d, g, fl, d["T_amb"], 2.0); setpoint_trade(d, g, fl, 2.0, d["T_amb"])
     figs = dict(sankey=fig_s, ladder=waterfall_chart(res, Q, d),
                 resist=resistance_chart(res)[0], transient=fig_s,
@@ -1582,6 +1639,21 @@ def smoke():
     html = export_report_html(secs, figs)
     assert len(secs) == 7 and "<html" in html and len(html) > 8000
     print(f"report: {len(secs)} sections, HTML {len(html)//1000} kB")
+    # ---- v7 checks: serpentine plates + circuit ----
+    ds = dict(d, plate_on=True, u_oil=0.05, plate_t=0.0015, plate_contact=0.8)
+    rs = solve_steady(ds, g, fl, 1.0, d["T_amb"], C_rate=d["C1"])
+    A_pl, eta_pl, m_pl = plate_fin_area(ds, g, rs["h_tube"])
+    sp = serpentine_pump(ds, g, fl, 0.05)
+    dTp = sp["dT_est"](rs["Q_eff"])
+    print(f"serpentine: T_b {res['T_b']:.1f} -> {rs['T_b']:.1f} °C  "
+          f"plates +{A_pl:.1f} m² (eta {eta_pl:.2f}, {m_pl:.1f} kg)  "
+          f"pump {sp['P']:.2f} W  channel dT {dTp:.1f} K  "
+          f"spread {res['spread']:.1f} -> {rs['spread']:.1f} K")
+    assert rs["T_b"] < res["T_b"] - 2.5 and sp["P"] < 5.0 and A_pl > 0.7
+    assert dTp < 6.0, "parallel channels should carry the heat"
+    fc = thermal_circuit_fig(d, g, fl, res, res["Q_eff"])
+    assert len(fc.layout.shapes) >= 6
+    nu_T_fig(fl)
     print("SMOKE OK")
 
 
@@ -1602,7 +1674,7 @@ def plating_frac(T_C): return float(np.interp(T_C, PLATE_T, PLATE_F))
 
 # format presets: capacity/DCIR/mass from teardown literature
 # (4680: About:Energy teardown 86.7 Wh -> ~24 Ah, 244 Wh/kg -> ~355 g;
-#  DCIR ~5-6 mOhm mid-SoC is an estimate from published teardowns)
+#  DCIR ~5-6 mΩ mid-SoC is an estimate from published teardowns)
 FORMATS = {
     "18650": dict(d_cell=0.018, h_cell=0.065, cap=3.4, rdc=30.0, mcell=0.048),
     "21700": dict(d_cell=0.021, h_cell=0.070, cap=5.0, rdc=25.0, mcell=0.070),
@@ -1785,7 +1857,7 @@ def simulate_pack(d, g, fl, masses, T_amb, spec) -> dict:
 GOAL_LEVERS = {"Total water flow [L/min]": ("flow_lpm", 0.5, 60.0, False),
                "Number of tubes": ("n_tubes", 1, 60, True),
                "Stirring [m/s]": ("u_oil", 0.0, 0.20, False),
-               "Water inlet [degC]": ("T_water_in", 0.0, 40.0, False),
+               "Water inlet [°C]": ("T_water_in", 0.0, 40.0, False),
                "Cell pitch [mm]": ("pitch", 0.022, 0.035, False)}
 
 def goal_seek(d, fl, lever_key, lo, hi, is_int, T_amb, C_duty, T_target, invert):
@@ -1821,7 +1893,7 @@ PRODUCTION_PACKS = [
     dict(Pack="This design", kWh=None, kg=None, Whkg=None, WhL=None, kWpk=None,
          Cooling="static immersion + internal water HX"),
     dict(Pack="Mercedes AMG HPB80", kWh=6.1, kg=89, Whkg=68.5, WhL=None, kWpk=150,
-         Cooling="pumped dielectric immersion + external HX, 45 degC set point"),
+         Cooling="pumped dielectric immersion + external HX, 45 °C set point"),
     dict(Pack="Tesla Model 3 LR (2170)", kWh=75.0, kg=478, Whkg=157, WhL=None, kWpk=377,
          Cooling="glycol ribbon/serpentine side cooling, 4416 cells, 96S46P"),
     dict(Pack="Tesla Model Y (4680 structural)", kWh=79.0, kg=447, Whkg=177, WhL=None,
@@ -1840,11 +1912,11 @@ def report_html(d, g, fl, res, masses, Cmax, figs) -> str:
                     f"stirring {d['u_oil']*100:.1f} cm/s"),
         ("Internal HX", f"{d['n_tubes']} x {d['tube_od']*1000:.0f} mm {d['tube_mat']} tubes, "
                         f"{d['tube_plane']}, fins {'on' if d['fins_on'] else 'off'}"),
-        ("Water loop", f"{d['flow_lpm']:.0f} L/min at {d['T_water_in']:.0f} degC"),
-        ("Steady at duty", f"can {res['T_b']:.1f} / core {res['T_core']:.1f} degC at "
+        ("Water loop", f"{d['flow_lpm']:.0f} L/min at {d['T_water_in']:.0f} °C"),
+        ("Steady at duty", f"can {res['T_b']:.1f} / core {res['T_core']:.1f} °C at "
                            f"C_rms, spread {res['spread']:.1f} K, "
                            f"thermosiphon {res['u_ts']*1000:.1f} mm/s"),
-        ("Capability", f"max continuous {Cmax:.2f}C to {d['T_limit']:.0f} degC "
+        ("Capability", f"max continuous {Cmax:.2f}C to {d['T_limit']:.0f} °C "
                        f"({'core' if d['limit_core'] else 'can'})"),
         ("Mass", f"pack {masses['m_pack']:.0f} kg -> {masses['whkg_pack']:.0f} Wh/kg, "
                  f"{masses['whl_pack']:.0f} Wh/L (enclosure {masses['m_struct']:.0f} kg at "
@@ -1861,7 +1933,7 @@ def report_html(d, g, fl, res, masses, Cmax, figs) -> str:
 h1{{border-bottom:3px solid #F59E0B}}table{{border-collapse:collapse;margin:1em 0}}</style>
 </head><body><h1>Immersion Pack Lab - design report</h1>
 <p>Generated by the app; model honesty: oil-side h +/-30% unless calibrated.
-Wang et al. 2023 benchmark: 33.0 vs 32.3 degC measured.</p>
+Wang et al. 2023 benchmark: 33.0 vs 32.3 °C measured.</p>
 <table>{tab}</table>{parts}
 <p style="font-size:0.85em;color:#666">Two-node network; Churchill-Chu / Churchill-Bernstein /
 Hausen-Gnielinski correlations; DCIR(T), entropic heat, thermosiphon and busbar terms included.
@@ -2002,7 +2074,7 @@ def thin_labels(xs, ys, names, logx=False, min_dx=0.10, min_dy=0.12):
 # ------------------------------------------------------------------ #
 def design_inputs(cool_df) -> dict:
     d = {}
-    c1, c2, c3 = st.columns(3, gap="medium")
+    c1 = c2 = c3 = contextlib.nullcontext()
     with c1, st.container(border=True):
         st.markdown("##### Cells")
         d["fmt"] = _w(st.selectbox, "Format", "fmt", "21700",
@@ -2020,7 +2092,7 @@ def design_inputs(cool_df) -> dict:
         d["h_cell"] = _w(st.slider, "Height [mm]", "hcell", 70.0, min_value=40.0, max_value=130.0, step=1.0) / 1000
         d["cap_Ah"] = _w(st.number_input, "Capacity [Ah]", "cap", 5.0, min_value=1.0, max_value=30.0, step=0.1)
         d["v_nom"] = _w(st.number_input, "Nominal V", "vnom", 3.7, min_value=3.0, max_value=4.0, step=0.05)
-        d["r_dc"] = _w(st.number_input, "DCIR at 25 degC [mOhm]", "rdc", 25.0, min_value=2.0, max_value=80.0, step=0.5)
+        d["r_dc"] = _w(st.number_input, "DCIR at 25 °C [mΩ]", "rdc", 25.0, min_value=2.0, max_value=80.0, step=0.5)
         d["k_dcir"] = _w(st.slider, "DCIR fall [%/K]", "kdcir", 1.2, min_value=0.0, max_value=3.0, step=0.1) / 100.0
         d["m_cell"] = _w(st.number_input, "Mass [kg]", "mcell", 0.070, min_value=0.03, max_value=0.6, step=0.001, format="%.3f")
         d["cp_cell"] = _w(st.number_input, "cp [J/kgK]", "cpcell", 950.0, min_value=700.0, max_value=1200.0, step=10.0)
@@ -2053,8 +2125,33 @@ def design_inputs(cool_df) -> dict:
         names = list(cool_df["name"])
         d["coolant"] = _w(st.selectbox, "Fluid", "fluid",
                           "MIVOLT DF7" if "MIVOLT DF7" in names else names[0], options=names)
-        d["u_oil"] = _w(st.slider, "Stirring [m/s]", "uoil", 0.0, min_value=0.0, max_value=0.20, step=0.005,
-                        help="The larger of this and the predicted thermosiphon is used.")
+        with st.expander("ν(T) - viscosity falls with temperature (in the solver)"):
+            st.plotly_chart(nu_T_fig(fluid_dict(
+                cool_df[cool_df["name"] == d["coolant"]].iloc[0])),
+                use_container_width=True, key="nuT")
+        d["circ"] = _w(st.selectbox, "Circulation method", "circ",
+                       "Thermosiphon only",
+                       options=["Thermosiphon only", "Open stirring",
+                                "Serpentine plates (guided)"],
+                       help="Realistic options are compared in Learn and Ideas.")
+        d["u_oil"] = 0.0
+        d["plate_on"] = False
+        if d["circ"] == "Open stirring":
+            d["u_oil"] = _w(st.slider, "Stirring velocity [m/s]", "uoil", 0.0,
+                            min_value=0.0, max_value=0.20, step=0.005)
+        if d["circ"] == "Serpentine plates (guided)":
+            d["plate_on"] = True
+            d["u_guided"] = _w(st.slider, "Guided channel velocity [m/s]", "ugd",
+                               0.05, min_value=0.0, max_value=0.15, step=0.005)
+            d["u_oil"] = d["u_guided"]
+            d["plate_t"] = _w(st.select_slider, "Plate thickness [mm]", "plt", 1.5,
+                              options=[1.0, 1.5, 2.0]) / 1000
+            d["plate_mat"] = _w(st.selectbox, "Plate material", "plm", "Aluminium",
+                                options=["Aluminium", "Copper"])
+            d["plate_contact"] = _w(st.slider, "Plate-to-tube contact factor",
+                                    "plc", 0.8, min_value=0.4, max_value=1.0,
+                                    step=0.05,
+                                    help="Brazed ~0.9, clamped ~0.6")
         with st.expander("Holders"):
             d["m_holder_g"] = _w(st.slider, "Holder mass [g/cell]", "mhold", 8.0, min_value=0.0, max_value=25.0, step=1.0)
             d["holder_block"] = _w(st.slider, "Gap-flow blockage", "hblk", 0.20, min_value=0.0, max_value=0.6, step=0.05)
@@ -2076,10 +2173,10 @@ def design_inputs(cool_df) -> dict:
             d["fin_mat"] = _w(st.selectbox, "Fin material", "finm", "Aluminium", options=["Aluminium", "Copper"])
         d["loop_fluid"] = _w(st.selectbox, "Water loop fluid", "loopf", "Water", options=list(WATER_LOOP))
         d["flow_lpm"] = _w(st.slider, "Flow [L/min]", "flow", 10.0, min_value=0.5, max_value=60.0, step=0.5)
-        d["T_water_in"] = _w(st.slider, "Inlet T [degC]", "twin", 20.0, min_value=0.0, max_value=40.0, step=1.0)
+        d["T_water_in"] = _w(st.slider, "Inlet T [°C]", "twin", 20.0, min_value=0.0, max_value=40.0, step=1.0)
         with st.expander("Structure and busbars"):
-            d["R_bus"] = _w(st.number_input, "Busbar R [mOhm] (0=auto)", "rbus", 0.0, min_value=0.0, max_value=20.0, step=0.1)
-            d["bus_J"] = _w(st.slider, "Busbar J [A/mm2]", "busj", 5.0, min_value=2.0, max_value=10.0, step=0.5)
+            d["R_bus"] = _w(st.number_input, "Busbar R [mΩ] (0=auto)", "rbus", 0.0, min_value=0.0, max_value=20.0, step=0.1)
+            d["bus_J"] = _w(st.slider, "Busbar J [A/mm²]", "busj", 5.0, min_value=2.0, max_value=10.0, step=0.5)
             d["sigma_MPa"] = _w(st.slider, "Allowable stress [MPa]", "sigma", 80.0, min_value=30.0, max_value=200.0, step=5.0)
             d["stiff"] = _w(st.slider, "Stiffening knock-down", "stiff", 0.45, min_value=0.2, max_value=1.0, step=0.05)
             d["p_des_bar"] = _w(st.slider, "Design pressure [bar g]", "pdes", 0.5, min_value=0.1, max_value=2.0, step=0.1)
@@ -2131,15 +2228,15 @@ def duty_inputs() -> dict:
                 st.error(f"Could not parse: {e}")
     if d["duty"] in ("Charge (CC-CV)", "Cycling (dis/chg x N)", "Drive cycle"):
         d["C_chg"] = _w(st.slider, "Charge rating (CC) [C]", "cchg", 1.0, min_value=0.2, max_value=4.0, step=0.1,
-                        help="Plating map derates below 25 degC; also caps regen.")
+                        help="Plating map derates below 25 °C; also caps regen.")
         d["soc0"] = _w(st.slider, "Start SoC", "soc0", 0.90 if d["duty"] != "Charge (CC-CV)" else 0.20,
                        min_value=0.0, max_value=1.0, step=0.05)
     st.markdown("---")
     d["duration"] = _w(st.slider, "Simulation length [s]", "dur", 3600.0, min_value=300.0, max_value=14400.0, step=300.0)
-    d["T_start"] = _w(st.slider, "Start temperature [degC]", "tstart", 25.0, min_value=-10.0, max_value=45.0, step=1.0)
-    d["T_limit"] = _w(st.slider, "Cell limit [degC]", "tlim", 45.0, min_value=35.0, max_value=60.0, step=1.0)
+    d["T_start"] = _w(st.slider, "Start temperature [°C]", "tstart", 25.0, min_value=-10.0, max_value=45.0, step=1.0)
+    d["T_limit"] = _w(st.slider, "Cell limit [°C]", "tlim", 45.0, min_value=35.0, max_value=60.0, step=1.0)
     d["limit_core"] = _w(st.checkbox, "Apply limit to core", "limcore", False)
-    d["T_amb"] = _w(st.slider, "Ambient [degC]", "tamb", 25.0, min_value=-10.0, max_value=45.0, step=1.0)
+    d["T_amb"] = _w(st.slider, "Ambient [°C]", "tamb", 25.0, min_value=-10.0, max_value=45.0, step=1.0)
     return d
 
 # ------------------------------------------------------------------ #
@@ -2157,13 +2254,16 @@ def main():
         st.session_state.cool_df = _read_coolants()
     cool_df = st.session_state.cool_df
 
-    tabs = st.tabs(["Design", "Duty", "Results", "Improve", "Safety",
+    tabs = st.tabs(["Design", "Duty", "Results", "Improve", "Ideas", "Safety",
                     "Compare", "Learn", "Validate", "Report"])
 
     with tabs[0]:
-        st.caption("Define the pack. The status bar above and the 3D view below update live.")
-        d = dict(DEFAULTS)
-        d.update(design_inputs(cool_df))
+        colL, colR = st.columns([1.15, 1], gap="large")
+        with colL:
+            st.caption("Define the pack. The live view on the right follows "
+                       "every change and stays with you as you scroll.")
+            d = dict(DEFAULTS)
+            d.update(design_inputs(cool_df))
     with tabs[1]:
         cduty, cplot = st.columns([1, 1.4], gap="large")
         with cduty:
@@ -2207,7 +2307,11 @@ def main():
     Q_duty = res["Q_eff"]
     loop = WATER_LOOP[d["loop_fluid"]]
     P_pump = water_pump_power(d, g, loop)["P"]
-    P_stir = stirrer_power(d, g, fl, d["u_oil"])
+    if d.get("plate_on"):
+        _sp = serpentine_pump(d, g, fl, d["u_oil"])
+        P_stir = _sp["P"]
+    else:
+        P_stir = stirrer_power(d, g, fl, d["u_oil"])
     Q_bus = (C_steady * d["cap_Ah"] * d["Np"]) ** 2 * tr["bus"]["R"]
     chil = chiller_model(res["Q_w"] + P_pump, d["T_water_in"], d["T_amb"])
 
@@ -2222,13 +2326,13 @@ def main():
             f"{(' / ' + d['cycle']) if d['duty'] == 'Drive cycle' else ''}</p>"
             f"<span class='chip {'ok' if ok else 'bad'}'>"
             f"{'WITHIN LIMIT' if ok else 'OVER LIMIT'} - "
-            f"{T_gov:.1f} / {d['T_limit']:.0f} degC at {C_steady:.2f}C rms"
+            f"{T_gov:.1f} / {d['T_limit']:.0f} °C at {C_steady:.2f}C rms"
             f"</span></div>", unsafe_allow_html=True)
     with kpi_box:
         kpi_cards([
             ("Cell can / core", f"{res['T_b']:.1f} / {res['T_core']:.1f}",
              f"{T_gov-d['T_limit']:+.1f} K vs limit", "ok" if ok else "bad"),
-            ("Max continuous", f"{Cmax:.2f} C", f"to {d['T_limit']:.0f} degC",
+            ("Max continuous", f"{Cmax:.2f} C", f"to {d['T_limit']:.0f} °C",
              "brand"),
             ("Heat at duty", f"{Q_duty/1000:.2f} kW",
              f"chiller ~{chil['P_el']/1000:.2f} kW el", ""),
@@ -2248,7 +2352,7 @@ def main():
         f"<div class='kpi'><div class='l'>Design status</div>"
         f"<div class='v {'ok' if ok else 'bad'}'>"
         f"{'Within limit' if ok else 'Over limit'}</div>"
-        f"<div class='s'>{res['T_b']:.1f} degC at {C_steady:.2f}C rms - "
+        f"<div class='s'>{res['T_b']:.1f} °C at {C_steady:.2f}C rms - "
         f"thermosiphon {res['u_ts']*1000:.1f} mm/s - spread "
         f"{res['spread']:.1f} K</div></div>", unsafe_allow_html=True)
     if not ok:
@@ -2270,29 +2374,48 @@ def main():
                 st.rerun()
     # (full narrative report lives in tab 9; sidebar keeps a shortcut)
     sb.caption("Full narrative report: Report tab.")
-    sb.caption("Wang et al. 2023 benchmark: 33.0 vs 32.3 degC. Oil-side h honest to "
+    sb.caption("Wang et al. 2023 benchmark: 33.0 vs 32.3 °C. Oil-side h honest to "
                "+/-30% until calibrated (tab 8).")
 
-    # ---------------- Design tab: 3D / plan view ---------------- #
-    with tabs[0]:
-        st.markdown("---")
-        vleft, vright = st.columns([3, 1])
-        with vright:
-            view = st.radio("View", ["3D", "Plan"], horizontal=True)
-            s_oil = st.checkbox("Oil fill", True)
-            s_tub = st.checkbox("Tubes", True)
-            s_fin = st.checkbox("Fin envelopes", True)
-            s_box = st.checkbox("Enclosure", True)
-            st.caption(f"Box {g['Lx']*1000:.0f} x {g['Ly']*1000:.0f} x {g['Lz']*1000:.0f} mm, "
-                       f"gap {g['gap_mm']:.1f} mm, enclosure wall "
-                       f"{masses['enc']['t_mm']:.1f} mm eff. Fins drawn as translucent "
-                       "envelopes (true pitch {:.0f}/m).".format(1/d['fin_p'] if d['fins_on'] else 0))
-        with vleft:
-            if view == "3D":
-                st.plotly_chart(pack_3d_figure(d, g, s_oil, s_tub, s_box, s_fin),
-                                use_container_width=True)
-            else:
-                st.plotly_chart(layout_figure(d, g), use_container_width=True)
+    # ---------------- Design tab: sticky live view ---------------- #
+    with colR:
+        with st.container(key="liveview"):
+            with st.container(border=True):
+                v1, v2, v3 = st.columns([1.4, 1, 1])
+                view = v1.radio("View", ["3D", "Plan"], horizontal=True,
+                                label_visibility="collapsed")
+                s_oil = v2.toggle("Oil", True)
+                s_box = v3.toggle("Box", True)
+                s_tub, s_fin = True, True
+                if view == "3D":
+                    st.plotly_chart(pack_3d_figure(d, g, s_oil, s_tub, s_box,
+                                                   s_fin),
+                                    use_container_width=True, key="live3d",
+                                    config=PLOTCFG)
+                else:
+                    st.plotly_chart(layout_figure(d, g),
+                                    use_container_width=True, key="liveplan")
+                T_gov0 = res["T_core"] if d["limit_core"] else res["T_b"]
+                ok0 = T_gov0 <= d["T_limit"]
+                pin = st.session_state.get("pinned")
+                def _dlt(cur, key, fmt="{:+.1f}"):
+                    if not pin or key not in pin: return ""
+                    return f" ({fmt.format(cur - pin[key])} vs A)"
+                kpi_cards([
+                    ("Can / core", f"{res['T_b']:.1f} / {res['T_core']:.1f}°C",
+                     f"{T_gov0-d['T_limit']:+.1f} K margin"
+                     + _dlt(res['T_b'], 'T_can'), "ok" if ok0 else "bad"),
+                    ("Spread", f"{res['spread']:.1f} K",
+                     "criterion 5 K" + _dlt(res['spread'], 'Spread_K'), ""),
+                    ("Mass", f"{masses['m_pack']:.0f} kg",
+                     f"{masses['whkg_pack']:.0f} Wh/kg"
+                     + _dlt(masses['m_pack'], 'Pack_kg', '{:+.0f} kg'), ""),
+                ])
+                st.caption(f"Box {g['Lx']*1000:.0f}×{g['Ly']*1000:.0f}×"
+                           f"{g['Lz']*1000:.0f} mm - gap {g['gap_mm']:.1f} mm - "
+                           f"circulation: {d['circ'].lower()}"
+                           + (f" - plates +{res.get('A_plate',0):.1f} m² eff."
+                              if d.get('plate_on') else ""))
         with st.expander("Mass and packaging audit"):
             mdf2 = pd.DataFrame([
                 ["Cells", masses["m_cells"]], ["Coolant", masses["m_oil"]],
@@ -2303,7 +2426,7 @@ def main():
             ], columns=["Item", "kg"])
             mdf2["% of pack"] = 100 * mdf2["kg"] / masses["m_pack"]
             st.dataframe(mdf2.round(1), hide_index=True, use_container_width=True)
-            st.caption(f"Worst cell ~{res['T_worst']:.1f} degC, best "
+            st.caption(f"Worst cell ~{res['T_worst']:.1f} °C, best "
                        f"~{res['T_best']:.1f} (spread {res['spread']:.1f} K vs "
                        f"5 K). Buffer "
                        f"{(masses['C_oil']+masses['C_batt'])/1e3:.0f} kJ/K.")
@@ -2344,15 +2467,16 @@ def main():
                 figT.add_trace(go.Scatter(x=tr["t"]/60, y=tr["soc"]*4, yaxis="y2",
                                           name="SoC (x4)", line=dict(color="#10B981", width=2)))
             figT.update_layout(height=380, xaxis_title="Time [min]",
-                               yaxis_title="Temperature [degC]",
+                               yaxis_title="Temperature [°C]",
                                yaxis2=dict(title="C / SoCx4", overlaying="y", side="right",
                                            showgrid=False,
                                            range=[min(0, float(C_arr.min())*1.2),
                                                   max(float(np.abs(C_arr).max())*1.6, 4.2)]),
                                plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",
                                legend=dict(orientation="h", y=1.14),
+                               hovermode="x unified",
                                margin=dict(l=10, r=10, t=10, b=10))
-            st.plotly_chart(figT, use_container_width=True)
+            st.plotly_chart(figT, use_container_width=True, config=PLOTCFG)
             if spec["kind"] == "P":
                 st.caption(f"Official distance {spec['D_km']:.2f} km/cycle; peak "
                            f"{tr['C'].max():.2f}C / regen {-tr['C'].min():.2f}C; "
@@ -2366,14 +2490,12 @@ def main():
     # ---------------- Results ---------------- #
     with tabs[2]:
         st.plotly_chart(heat_sankey(res, Q_duty, Q_bus, P_pump, P_stir, chil),
-                        use_container_width=True, key="res_sankey")
-        cL, cR = st.columns([1, 1])
-        with cL:
-            st.plotly_chart(waterfall_chart(res, Q_duty, d),
-                            use_container_width=True, key="res_ladder")
-        with cR:
-            figR, worst = resistance_chart(res)
-            st.plotly_chart(figR, use_container_width=True, key="res_resist")
+                        use_container_width=True, key="res_sankey", config=PLOTCFG)
+        st.plotly_chart(thermal_circuit_fig(d, g, fl, res, Q_duty),
+                        use_container_width=True, key="res_circuit",
+                        config=PLOTCFG)
+        st.plotly_chart(waterfall_chart(res, Q_duty, d),
+                        use_container_width=True, key="res_ladder")
         st.markdown("#### The heat journey, station by station")
         st.caption("Follow the watts from inside the cell to the chiller. "
                    "Each card: what happens here, the numbers, and how to "
@@ -2395,6 +2517,34 @@ def main():
 
     # ---------------- Improve ---------------- #
     with tabs[3]:
+        with st.container(border=True):
+            st.markdown("#### Predictor - what happens if...")
+            st.caption("Play with the levers; nothing is saved to the design. "
+                       "Every slider move re-solves instantly.")
+            p1, p2, p3, p4, p5 = st.columns(5)
+            pf_flow = p1.slider("Flow [L/min]", 0.5, 60.0, float(d["flow_lpm"]), 0.5)
+            pf_tubes = p2.slider("Tubes", 1, 60, int(d["n_tubes"]))
+            pf_u = p3.slider("Oil velocity [m/s]", 0.0, 0.15, float(d["u_oil"]), 0.005)
+            pf_tin = p4.slider("Inlet [°C]", 0.0, 40.0, float(d["T_water_in"]), 1.0)
+            pf_C = p5.slider("C-rate", 0.2, 6.0, float(round(C_steady, 1)), 0.1)
+            dp_ = dict(d, flow_lpm=pf_flow, n_tubes=int(pf_tubes), u_oil=pf_u,
+                       T_water_in=pf_tin)
+            gp_ = build_geometry(dp_)
+            rp_ = solve_steady(dp_, gp_, fl, 1.0, d["T_amb"], C_rate=pf_C)
+            okp = rp_["T_b"] <= d["T_limit"]
+            kpi_cards([
+                ("Predicted can / core",
+                 f"{rp_['T_b']:.1f} / {rp_['T_core']:.1f}°C",
+                 f"{rp_['T_b']-res['T_b']:+.1f} K vs current",
+                 "ok" if okp else "bad"),
+                ("Margin to limit", f"{d['T_limit']-rp_['T_b']:+.1f} K",
+                 f"at {pf_C:.1f}C continuous", "ok" if okp else "bad"),
+                ("Spread", f"{rp_['spread']:.1f} K",
+                 f"{rp_['spread']-res['spread']:+.1f} vs current", ""),
+                ("Heat", f"{rp_['Q_eff']/1000:.2f} kW",
+                 f"chiller ~{chiller_model(rp_['Q_w'], pf_tin, d['T_amb'])['P_el']:.0f} W el",
+                 ""),
+            ])
         cpin1, cpin2, _sp = st.columns([1, 1, 4])
         summary = dict(Fluid=fl["name"], T_can=round(res["T_b"], 1),
                        T_core=round(res["T_core"], 1), Cmax=round(Cmax, 2),
@@ -2428,15 +2578,90 @@ def main():
                             use_container_width=True, key="imp_csweep")
         improve_core(d, g, fl, masses, res, Q_duty, C_steady, cool_df)
 
-    # ---------------- Safety ---------------- #
+    # ---------------- Ideas ---------------- #
     with tabs[4]:
+        st.caption("Concepts tried against the live design. Baseline = this "
+                   "design with no forced circulation. Adopt a winner via "
+                   "Design - Circulation method.")
+        with st.container(border=True):
+            st.markdown("#### Idea A - serpentine plate circulation (yours)")
+            st.markdown(
+                "Thin plates hang from the tubes between cell rows: they act "
+                "as **conduction fins** (both faces wetted, no water inside) "
+                "and guide a **small pump** to push oil along every row "
+                "channel - forced flow exactly where the gaps are tightest, "
+                "immune to the sub-6 mm gap penalty. Channels are **parallel "
+                "and manifolded**; a single long serpentine would heat the "
+                "oil tens of kelvin end to end.")
+            i1, i2, i3 = st.columns(3)
+            iu = i1.slider("Channel velocity [m/s]", 0.01, 0.15, 0.05, 0.005,
+                           key="id_u")
+            it = i2.select_slider("Plate thickness [mm]", [1.0, 1.5, 2.0], 1.5,
+                                  key="id_t")
+            ic = i3.slider("Plate-tube contact", 0.4, 1.0, 0.8, 0.05, key="id_c")
+            base = dict(d, plate_on=False, u_oil=0.0)
+            stir = dict(d, plate_on=False, u_oil=iu)
+            serp = dict(d, plate_on=True, u_oil=iu, plate_t=it / 1000,
+                        plate_contact=ic)
+            rows_i, bars = [], []
+            for nm, dd_ in [("Baseline (thermosiphon)", base),
+                            ("Open stirring", stir),
+                            ("Serpentine plates", serp)]:
+                r_ = solve_steady(dd_, g, fl, 1.0, d["T_amb"], C_rate=C_steady)
+                if dd_.get("plate_on"):
+                    P_ = serpentine_pump(dd_, g, fl, iu)["P"]
+                    dm_ = plate_fin_area(dd_, g, r_["h_tube"])[2]
+                else:
+                    P_ = stirrer_power(dd_, g, fl, dd_["u_oil"])
+                    dm_ = 0.0
+                rows_i.append(dict(Concept=nm, T_can=round(r_["T_b"], 1),
+                                   T_core=round(r_["T_core"], 1),
+                                   Spread_K=round(r_["spread"], 1),
+                                   Pump_W=round(P_, 1),
+                                   Added_kg=round(dm_, 1),
+                                   A_sink_m2=round(r_["A_oilside"], 1)))
+                bars.append((nm, r_["T_b"], P_, dm_))
+            idf = pd.DataFrame(rows_i)
+            st.dataframe(idf, hide_index=True, use_container_width=True)
+            figI = go.Figure()
+            names_i = [b[0] for b in bars]
+            figI.add_trace(go.Bar(name="Cell T [°C]", x=names_i,
+                                  y=[b[1] for b in bars],
+                                  marker_color="#EF4444",
+                                  text=[f"{b[1]:.1f}" for b in bars],
+                                  textposition="outside"))
+            figI.add_trace(go.Bar(name="Pump [W]", x=names_i,
+                                  y=[b[2] for b in bars],
+                                  marker_color="#6366F1",
+                                  text=[f"{b[2]:.1f}" for b in bars],
+                                  textposition="outside"))
+            figI.update_layout(barmode="group", height=320,
+                               title=f"Concepts at {C_steady:.2f}C rms "
+                                     f"(limit {d['T_limit']:.0f} °C)",
+                               legend=dict(orientation="h", y=1.15))
+            st.plotly_chart(figI, use_container_width=True, key="ideas_bar")
+            dT_serp = rows_i[0]["T_can"] - rows_i[2]["T_can"]
+            dT_stir = rows_i[0]["T_can"] - rows_i[1]["T_can"]
+            st.markdown(
+                f"**Verdict at this operating point:** serpentine buys "
+                f"**{dT_serp:.1f} K** over baseline for "
+                f"{rows_i[2]['Pump_W']:.1f} W and {rows_i[2]['Added_kg']:.0f} kg "
+                f"of plates (open stirring buys {dT_stir:.1f} K for "
+                f"{rows_i[1]['Pump_W']:.1f} W). The plates also cut the spread "
+                f"({rows_i[2]['Spread_K']:.1f} vs {rows_i[0]['Spread_K']:.1f} K) "
+                "because the sink is distributed. Risks: plate-to-tube joint "
+                "quality (the contact slider), channel blockage, manifold "
+                "design, and serviceability.")
+
+    # ---------------- Safety ---------------- #
+    with tabs[5]:
         st.markdown("Order-of-magnitude screening plus the engineering checklist. "
                     "Nothing here replaces abuse testing.")
         runaway_ui(d, g, fl, masses, res)
         exp_L = fl["beta"] * masses["V_oil_L"] * (d["T_service_max"] - 0.0)
         st.markdown(f"""
 **Expansion and leaks.**
-* Oil expansion over a 0 to {d['T_service_max']:.0f} degC service band:
+* Oil expansion over a 0 to {d['T_service_max']:.0f} °C service band:
   **~{exp_L:.1f} L** on {masses['V_oil_L']:.0f} L - bellows or bladder, never free air.
 * Hold **oil pressure above water pressure** so any tube leak goes oil-to-water
   (transformer practice); or double-walled tubes with interstitial leak detection.
@@ -2445,7 +2670,7 @@ def main():
 * Ester fluids: monitor moisture; copper: use inhibited oil or plated tubes.""")
 
     # ---------------- Compare ---------------- #
-    with tabs[5]:
+    with tabs[6]:
         st.subheader("Architectures")
         arch_tab(d, g, fl, masses, C_steady)
         st.markdown("---")
@@ -2456,8 +2681,23 @@ def main():
         bench_prod_tab(masses, Cmax)
 
     # ---------------- Learn ---------------- #
-    with tabs[6]:
+    with tabs[7]:
         learn_tab(d, g, fl, res, masses, cool_df, loop)
+        with st.expander("11. Moving the oil: the realistic options"):
+            st.markdown(f"""
+| Option | How | Power | Reaches tight gaps? | Notes |
+|---|---|---|---|---|
+| Thermosiphon only | buoyancy loop | 0 W | weakly ({res['u_ts']*1000:.1f} mm/s here) | free; dies if the cold plane is low |
+| Magnetically coupled stirrer | sealed impeller in the bulk | ~1-3 W | no - flow bypasses the gaps | cheapest forced option; what "Open stirring" models |
+| Pump + jet manifold | small pump, nozzles along a wall | ~2-5 W | partially | directional; nozzle fouling |
+| **Serpentine plates (guided)** | plates between rows form parallel channels; small pump | **~0.5 W at 5 cm/s** | **yes - every gap sees forced flow** | plates double as conduction fins (+~2 m² eff.); needs manifold + brazed joints |
+| Oscillating plate | reciprocating drive | ~2-10 W | partially | seals and fatigue |
+| Full pumped immersion | external HX loop | 20+ W | yes | the AMG HPB80 architecture |
+
+The guided-serpentine option is your Idea A: compare it live in the **Ideas**
+tab and adopt it via **Design - Circulation method**. Viscosity falls with
+temperature (Andrade law) and the solver already evaluates every film at its
+local film temperature - see the ν(T) curve in Design.""")
 
     # ---------------- Report ---------------- #
     figs_r = dict(
@@ -2478,13 +2718,13 @@ def main():
                                 line=dict(color=ACCENT, width=3)))
     figT_r.add_hline(y=d["T_limit"], line_dash="dash", line_color="#B91C1C")
     figT_r.update_layout(height=320, xaxis_title="min",
-                         yaxis_title="degC", plot_bgcolor="rgba(255,255,255,0)",
+                         yaxis_title="°C", plot_bgcolor="rgba(255,255,255,0)",
                          paper_bgcolor="rgba(0,0,0,0)",
                          legend=dict(orientation="h", y=1.15))
     figs_r["transient"] = figT_r
     secs = report_sections(d, g, fl, res, masses, tr, spec, Cmax, C_steady,
                            Q_duty, Q_bus, P_pump, P_stir, chil, figs_r)
-    with tabs[8]:
+    with tabs[9]:
         cbt, _ = st.columns([1, 3])
         cbt.download_button("Download this report (.html)",
                             data=export_report_html(secs, figs_r),
@@ -2493,7 +2733,7 @@ def main():
         render_report_tab(secs, figs_r)
 
     # ---------------- Validate and tune ---------------- #
-    with tabs[7]:
+    with tabs[8]:
         st.subheader("Benchmark: Wang et al. 2023")
         bench_wang_tab()
         st.markdown("---")
@@ -2515,7 +2755,7 @@ def main():
                                       line=dict(color="#EF4444", width=3)))
             figM.add_trace(go.Scatter(x=meas[0]/60, y=meas[1], mode="markers",
                                       name="Measured", marker=dict(color=INK, size=5)))
-            figM.update_layout(height=300, xaxis_title="min", yaxis_title="degC",
+            figM.update_layout(height=300, xaxis_title="min", yaxis_title="°C",
                                plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)")
             st.plotly_chart(figM, use_container_width=True)
             if st.button("Fit oil-film calibration factor"):
@@ -2526,17 +2766,59 @@ def main():
                 st.success(f"cal_h = {cb:.2f} (RMSE {rm:.2f} K) - applied below.")
                 st.rerun()
         st.markdown("---")
+        st.subheader("FEA studies (pack_fea_v1)")
+        f1, f2, f3 = st.columns(3)
+        with f1:
+            figF1 = go.Figure(go.Bar(
+                x=["Flat lid (FE)", "Best grillage (FE)", "App assumption"],
+                y=[25.9, 14.6, 11.7], marker_color=["#94A3B8", "#6366F1", "#F59E0B"],
+                text=["25.9", "14.6", "11.7"], textposition="outside"))
+            figF1.update_layout(height=260, title="Lid mass [kg] at 0.5 bar g",
+                                margin=dict(l=10, r=10, t=44, b=10))
+            st.plotly_chart(figF1, use_container_width=True, key="fea1")
+            st.caption("Roark validated to +0.0%. Honest knock-down 0.56 vs "
+                       "the app's 0.45 (composite rib action would close the "
+                       "gap) - consider 0.50.")
+        with f2:
+            figF2 = go.Figure()
+            figF2.add_trace(go.Bar(name="App formula", x=["21700 2C", "4680 2C"],
+                                   y=[2.85, 14.0], marker_color="#F59E0B"))
+            figF2.add_trace(go.Bar(name="FE (mandrel + wetted ends)",
+                                   x=["21700 2C", "4680 2C"], y=[2.28, 9.30],
+                                   marker_color="#6366F1"))
+            figF2.update_layout(barmode="group", height=260,
+                                title="Core-to-can ΔT [K]",
+                                legend=dict(orientation="h", y=1.2),
+                                margin=dict(l=10, r=10, t=44, b=10))
+            st.plotly_chart(figF2, use_container_width=True, key="fea2")
+            st.caption("Exact-solution validation -0.1%. The app is 20-34% "
+                       "conservative on real cells.")
+        with f3:
+            figF3 = go.Figure(go.Bar(
+                x=["App estimate", "Section model, co-flow", "Counterflow"],
+                y=[3.25, 1.08, 0.06],
+                marker_color=["#F59E0B", "#6366F1", "#10B981"],
+                text=["3.25", "1.08", "0.06"], textposition="outside"))
+            figF3.update_layout(height=260,
+                                title="Water-rise cell spread [K]",
+                                margin=dict(l=10, r=10, t=44, b=10))
+            st.plotly_chart(figF3, use_container_width=True, key="fea3")
+            st.caption("Energy closure 0.00%. Counterflow plumbing of "
+                       "alternate tubes removes the term for free.")
+        st.caption("Full self-validating scripts and figures: pack_fea_v1.zip "
+                   "(fea1_lid.py, fea2_cell.py, fea3_pack.py, REPORT.md).")
+        st.markdown("---")
         st.subheader("Model tuning")
         t1_, t2_, t3_ = st.columns(3)
         with t1_:
             _w(st.slider, "Oil-film calibration factor", "cal_h", 1.0, min_value=0.4, max_value=2.2, step=0.01)
             _w(st.slider, "Thermosiphon minor-loss K", "kloop", 5.0, min_value=0.0, max_value=20.0, step=0.5)
         with t2_:
-            _w(st.slider, "Casing-to-ambient h [W/m2K]", "hext", 5.0, min_value=0.0, max_value=25.0, step=0.5)
+            _w(st.slider, "Casing-to-ambient h [W/m²·K]", "hext", 5.0, min_value=0.0, max_value=25.0, step=0.5)
             _w(st.slider, "Gap under cells [mm]", "bgap", 5.0, min_value=0.0, max_value=20.0, step=1.0)
         with t3_:
             _w(st.slider, "Manifold margin [mm]", "mman", 20.0, min_value=0.0, max_value=60.0, step=5.0)
-            _w(st.slider, "Max service T (expansion) [degC]", "tserv", 60.0, min_value=40.0, max_value=90.0, step=5.0)
+            _w(st.slider, "Max service T (expansion) [°C]", "tserv", 60.0, min_value=40.0, max_value=90.0, step=5.0)
         if st.checkbox("Edit fluid property table", False):
             st.session_state.cool_df = st.data_editor(cool_df, num_rows="dynamic", height=260)
         st.caption("These knobs change the physics for every tab. cal_h multiplies both "
@@ -2555,23 +2837,140 @@ def chiller_model(Q_w, T_w_in, T_amb, eta=0.45, approach=5.0, cond_dT=10.0):
     return dict(COP=COP, P_el=Q_w / COP, lift=lift)
 
 def heat_sankey(res, Q_duty, Q_bus, P_pump, P_stir, chil):
-    lab = ["Cells", "Busbars", "Bulk oil", "Water loop", "Casing to ambient",
-           "Chiller", "Rejected to ambient", "Chiller electricity"]
-    src = [0, 1, 2, 2, 3, 7, 5]
-    dst = [2, 2, 3, 4, 5, 5, 6]
-    val = [max(Q_duty - Q_bus, 1e-3), max(Q_bus, 1e-3),
-           max(res["Q_w"], 1e-3), max(res["Q_atm"], 1e-3),
-           max(res["Q_w"] + P_pump, 1e-3), max(chil["P_el"], 1e-3),
-           max(res["Q_w"] + P_pump + chil["P_el"], 1e-3)]
+    """Left = sources, right = sinks. Link width = watts; colours follow the
+    physical stream (red heat, amber oil, blue water, grey rejection)."""
+    kw = lambda v: f"{v/1000:.2f} kW" if v >= 100 else f"{v:.0f} W"
+    Qc = max(Q_duty - Q_bus, 1e-3)
+    lab = [f"Cells<br>{kw(Qc)}", f"Busbars<br>{kw(Q_bus)}",
+           f"Bulk oil<br>{kw(Q_duty)}", f"Water loop<br>{kw(res['Q_w'])}",
+           f"Casing loss<br>{kw(res['Q_atm'])}",
+           f"Chiller<br>{kw(res['Q_w']+P_pump)} duty",
+           f"To ambient<br>{kw(res['Q_w']+P_pump+chil['P_el'])}",
+           f"Chiller electricity<br>{kw(chil['P_el'])}"]
+    node_c = ["#EF4444", "#D97706", "#F59E0B", "#0EA5E9", "#94A3B8",
+              "#6366F1", "#64748B", "#10B981"]
+    x = [0.01, 0.01, 0.28, 0.55, 0.99, 0.78, 0.99, 0.55]
+    y = [0.30, 0.75, 0.42, 0.35, 0.88, 0.42, 0.32, 0.80]
+    srcs = [0, 1, 2, 2, 3, 7, 5]
+    dsts = [2, 2, 3, 4, 5, 5, 6]
+    vals = [Qc, max(Q_bus, 1e-3), max(res["Q_w"], 1e-3),
+            max(res["Q_atm"], 1e-3), max(res["Q_w"] + P_pump, 1e-3),
+            max(chil["P_el"], 1e-3),
+            max(res["Q_w"] + P_pump + chil["P_el"], 1e-3)]
+    def rgba(hx, a=0.35):
+        return f"rgba({int(hx[1:3],16)},{int(hx[3:5],16)},{int(hx[5:7],16)},{a})"
+    link_c = [rgba(node_c[s]) for s in srcs]
     fig = go.Figure(go.Sankey(
-        node=dict(label=[f"{l}" for l in lab], pad=18, thickness=16,
-                  color=["#EF4444", "#D97706", "#F59E0B", "#0EA5E9", "#94A3B8",
-                         "#6366F1", "#64748B", "#10B981"]),
-        link=dict(source=src, target=dst, value=val,
-                  label=[f"{v:.0f} W" for v in val])))
-    fig.update_layout(height=300, margin=dict(l=10, r=10, t=30, b=10),
-                      title=f"Where {Q_duty:.0f} W goes (steady, at duty RMS)",
-                      paper_bgcolor="rgba(0,0,0,0)")
+        arrangement="fixed",
+        node=dict(label=lab, x=x, y=y, pad=22, thickness=20, color=node_c,
+                  line=dict(width=0),
+                  hovertemplate="%{label}<extra></extra>"),
+        link=dict(source=srcs, target=dsts, value=vals, color=link_c,
+                  hovertemplate="%{source.label} to %{target.label}: "
+                                "%{value:.0f} W<extra></extra>")))
+    fig.update_layout(height=360, margin=dict(l=10, r=10, t=56, b=10),
+                      font=dict(size=12),
+                      title="Heat flow map: every watt from the cells to the "
+                            "air outside (hover any ribbon)")
+    return fig
+
+
+def thermal_circuit_fig(d, g, fl, res, Q):
+    """The cell-to-water chain as an interactive circuit. Box height = share
+    of total resistance; colour = transport mode; hover = the governing law
+    with live numbers; the weakest link is flagged."""
+    el = [
+        ("Cell interior", "conduction", res["dT_core"] / max(Q, 1e-9),
+         f"Radial conduction through the jellyroll<br>"
+         f"R = 1/(4*pi*k_r*H) = {r_core(d)*1000:.1f} mK/W per cell<br>"
+         f"k_r = {d['k_rad']:.1f} W/m*K -> DT = {res['dT_core']:.1f} K"),
+        ("Can to oil film", "convection", res["R_b"],
+         f"Natural/forced convection film<br>h = {res['h_cell']:.0f} W/m²·K "
+         f"over A = {g['A_cells']:.1f} m²<br>R = 1/(hA) = "
+         f"{res['R_b']*1000:.2f} mK/W -> DT = {Q*res['R_b']:.1f} K"),
+        ("Oil to tube+fins" + ("+plates" if d.get("plate_on") else ""),
+         "convection", res["R_ot"],
+         f"Convection onto the finned sink<br>h = {res['h_tube']:.0f} W/m²·K, "
+         f"A_eff = {res['A_oilside']:.1f} m²"
+         + (f" (plates add {res.get('A_plate',0):.1f} m2, eta "
+            f"{res.get('eta_plate',0):.2f})" if d.get("plate_on") else "")
+         + f"<br>R = {res['R_ot']*1000:.2f} mK/W -> DT = {Q*res['R_ot']:.1f} K"),
+        ("Tube wall", "conduction", res["R_wall"],
+         f"Conduction through {d['tube_mat'].lower()}<br>"
+         f"R = ln(r_o/r_i)/(2*pi*k*L*n) = {res['R_wall']*1000:.3f} mK/W "
+         f"-> DT = {Q*res['R_wall']*1000:.0f} mK"),
+        ("Water film", "convection", res["R_in"],
+         f"{res['water_regime']} internal flow, Re = {res['Re_water']:.0f}<br>"
+         f"h = {res['h_water']:.0f} W/m²·K -> R = {res['R_in']*1000:.2f} mK/W "
+         f"-> DT = {Q*res['R_in']:.1f} K"),
+        ("Water stream", "advection", 0.5 * res["dT_water"] / max(Q, 1e-9),
+         f"Heat carried away: DT = Q/(m_dot*c_p)<br>rise "
+         f"{res['dT_water']:.1f} K inlet to outlet (+{0.5*res['dT_water']:.1f} "
+         "K at the mean cell)"),
+    ]
+    Rtot = sum(e[2] for e in el)
+    films = [e for e in el if e[1] == "convection"]
+    weakest = max(films, key=lambda e: e[2])[0]
+    mode_c = dict(conduction="#94A3B8", convection="#6366F1", advection="#0EA5E9")
+    fig = go.Figure()
+    x = 0.0
+    xw = 1.0 / len(el)
+    hover_x, hover_y, hover_t = [], [], []
+    for name, mode, R, tip in el:
+        share = R / max(Rtot, 1e-12)
+        h = 0.16 + 0.74 * share
+        is_w = name == weakest
+        fig.add_shape(type="rect", x0=x + 0.06 * xw, x1=x + 0.94 * xw,
+                      y0=0.5 - h / 2, y1=0.5 + h / 2,
+                      line=dict(color="#EF4444" if is_w else "#E2E8F0",
+                                width=3 if is_w else 1),
+                      fillcolor=mode_c[mode], opacity=0.9 if is_w else 0.75)
+        fig.add_annotation(x=x + 0.5 * xw, y=0.5 + h / 2 + 0.07,
+                           text=f"<b>{Q*R:.1f} K</b>" if Q * R >= 0.05
+                                else f"{Q*R*1000:.0f} mK",
+                           showarrow=False, font=dict(size=12, color="#0F172A"))
+        fig.add_annotation(x=x + 0.5 * xw, y=0.5 - h / 2 - 0.08,
+                           text=name.replace(" ", "<br>", 1), showarrow=False,
+                           font=dict(size=10.5, color="#475569"))
+        if is_w:
+            fig.add_annotation(x=x + 0.5 * xw, y=0.97, text="WEAKEST LINK",
+                               showarrow=False,
+                               font=dict(size=10, color="#B91C1C"))
+        hover_x.append(x + 0.5 * xw); hover_y.append(0.5)
+        hover_t.append(f"<b>{name}</b> - {mode}<br>{tip}<br>"
+                       f"share of chain: {100*share:.0f}%")
+        if x > 0:
+            pass
+        x += xw
+    for i in range(len(el) - 1):
+        fig.add_annotation(x=(i + 1) * xw, y=0.5, text="", showarrow=True,
+                           ax=(i + 0.94) * xw, ay=0.5, axref="x", ayref="y",
+                           arrowhead=2, arrowwidth=2, arrowcolor="#CBD5E1")
+    fig.add_trace(go.Scatter(x=hover_x, y=hover_y, mode="markers",
+                             marker=dict(size=42, opacity=0.0),
+                             hovertext=hover_t, hoverinfo="text",
+                             showlegend=False))
+    for mode, c in mode_c.items():
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers",
+                                 marker=dict(size=12, color=c, symbol="square"),
+                                 name=mode))
+    fig.update_layout(height=330, xaxis=dict(visible=False, range=[0, 1]),
+                      yaxis=dict(visible=False, range=[0, 1.05]),
+                      legend=dict(orientation="h", y=-0.05),
+                      margin=dict(l=10, r=10, t=54, b=10),
+                      title=f"The thermal circuit at {Q/1000:.2f} kW: box "
+                            "height = share of resistance, hover for the law")
+    return fig
+
+def nu_T_fig(fl):
+    Ts = np.linspace(0, 80, 60)
+    nus = [film_props(fl, t)["nu"] * 1e6 for t in Ts]
+    fig = go.Figure(go.Scatter(x=Ts, y=nus, line=dict(color="#F59E0B", width=3)))
+    fig.update_layout(height=210, xaxis_title="Oil temperature [°C]",
+                      yaxis_title="ν [cSt]",
+                      title=f"{fl['name']}: viscosity vs temperature "
+                            "(Andrade law - the solver uses this at film T)",
+                      margin=dict(l=10, r=10, t=44, b=10))
     return fig
 
 def station_list(d, g, fl, res, masses, Q_duty, Q_bus, P_pump, P_stir, chil,
@@ -2585,19 +2984,19 @@ def station_list(d, g, fl, res, masses, Q_duty, Q_bus, P_pump, P_stir, chil,
     S = []
     S.append(("1. Heat source - inside the cell",
         dTs["core"],
-        f"**{Q/1000:.2f} kW** at {res['T_b']:.1f} degC "
-        f"(DCIR {r_of_T(d, res['T_b']):.1f} mOhm vs {d['r_dc']:.0f} at 25; the "
+        f"**{Q/1000:.2f} kW** at {res['T_b']:.1f} °C "
+        f"(DCIR {r_of_T(d, res['T_b']):.1f} mΩ vs {d['r_dc']:.0f} at 25; the "
         f"hot pack makes {100*(1-r_of_T(d,res['T_b'])/d['r_dc']):.0f}% less heat). "
         f"Busbars add {Q_bus:.0f} W. Core runs **{res['dT_core']:.1f} K** above "
         f"the can (R = 1/(4 pi k_r H)).",
         f"Lower-DCIR cells cut heat at the source; a warmer set point does too "
-        f"(the AMG 45 degC logic). Busbars: thicker section (now sized at "
-        f"{d['bus_J']:.0f} A/mm2). The core term ignores the mandrel and wetted "
+        f"(the AMG 45 °C logic). Busbars: thicker section (now sized at "
+        f"{d['bus_J']:.0f} A/mm²). The core term ignores the mandrel and wetted "
         f"ends - FEA shows the real figure is ~20% lower (21700) to ~34% (4680); "
         f"only lower current or axial extraction move it further."))
     S.append(("2. Can to oil - the first film",
         dTs["f1"],
-        f"h_cell = **{res['h_cell']:.0f} W/m2K** over {g['A_cells']:.1f} m2 -> "
+        f"h_cell = **{res['h_cell']:.0f} W/m²·K** over {g['A_cells']:.1f} m² -> "
         f"**{dTs['f1']:.1f} K**. Gap factor {res['gapf']:.2f} at "
         f"{g['gap_mm']:.1f} mm; flow component from "
         f"{'stirring' if d['u_oil']>res['u_ts'] else 'thermosiphon'} "
@@ -2619,9 +3018,9 @@ def station_list(d, g, fl, res, masses, Q_duty, Q_bus, P_pump, P_stir, chil,
         f"{d['holder_block']*100:.0f}% of the riser - open them up."))
     S.append(("4. Oil to tube - the finned second film",
         dTs["f2"],
-        f"h_tube = **{res['h_tube']:.0f} W/m2K**; fins eta "
+        f"h_tube = **{res['h_tube']:.0f} W/m²·K**; fins eta "
         f"{res['fin']['eta']:.2f}, area x{res['fin']['area_gain']:.1f} -> "
-        f"A_eff {res['A_oilside']:.1f} m2 -> **{dTs['f2']:.1f} K**.",
+        f"A_eff {res['A_oilside']:.1f} m² -> **{dTs['f2']:.1f} K**.",
         "Fin harder (oil's low h keeps long fins ~90% efficient), add tubes, "
         "or go interstitial to distribute the sink. This film shares the "
         "same stirring lever as station 2."))
@@ -2643,7 +3042,7 @@ def station_list(d, g, fl, res, masses, Q_duty, Q_bus, P_pump, P_stir, chil,
         "split the water into counterflowing halves to also fix uniformity."))
     S.append(("7. Chiller - closing the loop",
         0.0,
-        f"Duty **{(res['Q_w']+P_pump)/1000:.2f} kW** at {d['T_water_in']:.0f} degC "
+        f"Duty **{(res['Q_w']+P_pump)/1000:.2f} kW** at {d['T_water_in']:.0f} °C "
         f"inlet; est. COP **{chil['COP']:.1f}** (lift {chil['lift']:.0f} K) -> "
         f"electrical **{chil['P_el']:.0f} W**. Casing sheds {res['Q_atm']:.0f} W "
         "for free.",
@@ -2664,14 +3063,14 @@ def setpoint_trade(d, g, fl, C_duty, T_amb):
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=a[:, 0], y=a[:, 3], name="Chiller electrical [W]",
                              line=dict(color="#6366F1", width=3)))
-    fig.add_trace(go.Scatter(x=a[:, 0], y=a[:, 1], name="Cell T [degC]",
+    fig.add_trace(go.Scatter(x=a[:, 0], y=a[:, 1], name="Cell T [°C]",
                              yaxis="y2", line=dict(color="#EF4444", width=3)))
     fig.add_trace(go.Scatter(x=[a[0, 0], a[-1, 0]], y=[d["T_limit"]] * 2,
                              yaxis="y2", mode="lines", name="limit",
                              line=dict(color="#B91C1C", dash="dash")))
-    fig.update_layout(height=300, xaxis_title="Water inlet set point [degC]",
+    fig.update_layout(height=300, xaxis_title="Water inlet set point [°C]",
                       yaxis_title="Chiller electrical [W]",
-                      yaxis2=dict(title="Cell T [degC]", overlaying="y",
+                      yaxis2=dict(title="Cell T [°C]", overlaying="y",
                                   side="right", showgrid=False),
                       title=f"Set-point trade at {C_duty:.2f}C: COP vs DCIR",
                       plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",
@@ -2691,7 +3090,7 @@ def c_sweep_fig(d, g, fl, T_amb, C_now):
                              line=dict(color="#EF4444", width=3)))
     fig.add_trace(go.Scatter(x=Cs, y=Pel, name="Chiller electrical [kW]",
                              line=dict(color="#6366F1", width=3)))
-    fig.add_trace(go.Scatter(x=Cs, y=Tb, name="Cell T [degC]", yaxis="y2",
+    fig.add_trace(go.Scatter(x=Cs, y=Tb, name="Cell T [°C]", yaxis="y2",
                              line=dict(color="#F59E0B", width=3)))
     fig.add_trace(go.Scatter(x=[Cs[0], Cs[-1]], y=[d["T_limit"]] * 2,
                              yaxis="y2", mode="lines", name="limit",
@@ -2699,7 +3098,7 @@ def c_sweep_fig(d, g, fl, T_amb, C_now):
     fig.add_vline(x=C_now, line_dash="dot", annotation_text=f"duty {C_now:.2f}C")
     fig.update_layout(height=340, xaxis_title="Continuous C-rate",
                       yaxis_title="kW",
-                      yaxis2=dict(title="Cell T [degC]", overlaying="y",
+                      yaxis2=dict(title="Cell T [°C]", overlaying="y",
                                   side="right", showgrid=False),
                       title="Scaling the same hardware with C "
                             "(heat ~ C^2, softened by DCIR(T))",
@@ -2715,7 +3114,7 @@ def scale_to_C(d, g, fl, masses, T_amb, C_t):
     ch = chiller_model(r0["Q_w"], d["T_water_in"], T_amb)
     I_pack = C_t * d["cap_Ah"] * d["Np"]
     bus = busbar_props(dict(d, C1=C_t), g)
-    rows = [("Heat to remove", f"{r0['Q_eff']/1000:.2f} kW at {r0['T_b']:.1f} degC "
+    rows = [("Heat to remove", f"{r0['Q_eff']/1000:.2f} kW at {r0['T_b']:.1f} °C "
              f"({'OK' if ok0 else 'OVER LIMIT'})",
              "size everything below for this, continuously")]
     rows.append(("Chiller", f"duty {(r0['Q_w'])/1000:.2f} kW, COP {ch['COP']:.1f} "
@@ -2731,15 +3130,15 @@ def scale_to_C(d, g, fl, masses, T_amb, C_t):
                 f"{x*1000:.1f}" if key == "pitch" else f"{x:.1f}"
         rows.append((f"Single lever: {name}",
                      f"now {cur:.1f}", f"needs {shown}"
-                     + ("" if x is None else f" -> {T:.1f} degC")))
+                     + ("" if x is None else f" -> {T:.1f} °C")))
     # stirred combination if static fails everywhere useful
     dd = dict(d, u_oil=max(d["u_oil"], 0.05))
     r_st = solve_steady(dd, g, fl, 1.0, T_amb, C_rate=C_t)
     rows.append(("Combination: stir 5 cm/s",
-                 f"{r_st['T_b']:.1f} degC ({stirrer_power(d,g,fl,0.05):.1f} W)",
+                 f"{r_st['T_b']:.1f} °C ({stirrer_power(d,g,fl,0.05):.1f} W)",
                  "then re-run the single levers from there"))
     rows.append(("Busbars", f"{I_pack:.0f} A pack current",
-                 f"section {bus['A_mm2']:.0f} mm2 at {d['bus_J']:.0f} A/mm2, "
+                 f"section {bus['A_mm2']:.0f} mm² at {d['bus_J']:.0f} A/mm2, "
                  f"{bus['m']:.1f} kg, adds {(I_pack**2*bus['R']):.0f} W"))
     rows.append(("Water side", f"Re = {r0['Re_water']:.0f} ({r0['water_regime']})",
                  "target Re > 3000; laminar extra flow is wasted"))
@@ -2749,8 +3148,8 @@ def scale_to_C(d, g, fl, masses, T_amb, C_t):
     chg_ok = plating_frac(25.0) * d["C_chg"]
     rows.append(("Charging at this C", f"cell rating {d['C_chg']:.1f}C CC; at "
                  f"{C_t:.1f}C the cell must be rated for it and warm "
-                 f"(map allows {plating_frac(15)*C_t:.1f}C at 15 degC)",
-                 "preheat to 25 degC+ or accept CC derating; CV tail unchanged"))
+                 f"(map allows {plating_frac(15)*C_t:.1f}C at 15 °C)",
+                 "preheat to 25 °C+ or accept CC derating; CV tail unchanged"))
     return dict(rows=rows, r0=r0, chiller=ch, fixes=fixes)
 
 # ------------------------------------------------------------------ #
@@ -2771,8 +3170,8 @@ def report_sections(d, g, fl, res, masses, tr, spec, Cmax, C_steady, Q_duty,
 {masses['E_kwh']:.1f} kWh / {d['Ns']*d['v_nom']:.0f} V pack of {g['N']} x
 {d['fmt']} cells in static {fl['name']}, cooled by {d['n_tubes']} internal
 water tubes ({d['tube_plane'].lower()}). At the duty's {C_steady:.2f}C RMS the
-cells sit at **{res['T_b']:.1f} degC can / {res['T_core']:.1f} core** against a
-{d['T_limit']:.0f} degC limit: **{'WITHIN LIMIT' if ok else 'OVER LIMIT'}**.
+cells sit at **{res['T_b']:.1f} °C can / {res['T_core']:.1f} core** against a
+{d['T_limit']:.0f} °C limit: **{'WITHIN LIMIT' if ok else 'OVER LIMIT'}**.
 Max continuous **{Cmax:.2f}C**. Pack **{masses['m_pack']:.0f} kg**
 ({masses['whkg_pack']:.0f} Wh/kg, {masses['whl_pack']:.0f} Wh/L). Chiller duty
 {res['Q_w']/1000:.2f} kW -> ~{chil['P_el']/1000:.2f} kW electrical at COP
@@ -2802,7 +3201,7 @@ hardware for the RMS, not the spike.
 buying chiller.""", ["transient"]))
     S.append(("Scaling with C-rate", f"""
 Heat scales ~C^2, softened by DCIR(T). This hardware holds
-{d['T_limit']:.0f} degC up to **{Cmax:.2f}C** continuous. The chart shows
+{d['T_limit']:.0f} °C up to **{Cmax:.2f}C** continuous. The chart shows
 heat, chiller electricity and cell temperature as C rises; the Improve tab's
 scale-to-C tool lists the cheapest change per subsystem for any target.
 *Improve at 4C-class duties:* stirring becomes mandatory (static is a 1-2C
@@ -2819,7 +3218,7 @@ under a kelvin, but venting pressurises the headspace - burst disc at
 {d['p_des_bar']:.1f} bar g, oil-above-water pressure rule, expansion bellows
 sized for ~{fl['beta']*masses['V_oil_L']*(d['T_service_max']):.1f} L.""", []))
     S.append(("Validation and honesty", f"""
-Wang et al. 2023 rebuild: 33.0 vs 32.3 degC measured, resistances within
+Wang et al. 2023 rebuild: 33.0 vs 32.3 °C measured, resistances within
 30-50%, zero tuning. FD/FE studies: lid coefficients match Roark (+0.0%),
 cell core matches the exact solution (-0.1%) and shows the app conservative
 by 20-34% on real geometry; the pack-section model closes energy to 0.00%.

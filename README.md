@@ -136,3 +136,24 @@ use the brand gradient; the HTML report export matches. No physics or
 widget-key changes: saved designs load unchanged. All styling lives in the
 single CSS block and the "packlab" plotly template at the top of app.py,
 so re-theming (including dark mode) is a one-block edit.
+
+## v7: clarity, interactivity, and the serpentine-plate idea
+Clearer physics graphics: the heat-flow Sankey is rebuilt with fixed columns,
+kW-labelled nodes and stream-coloured ribbons; a new interactive thermal
+circuit shows every interface in the cell-to-water chain sized by its share
+of resistance, coloured by transport mode (conduction / convection /
+advection), with the governing law and live numbers on hover and the weakest
+link flagged. Units are typeset properly throughout (m², W/m²·K, °C, mΩ, ν).
+Design now has a sticky live panel: the 3D/plan view plus a change summary
+(temperatures, margin, spread, mass, deltas vs the pinned design) stays on
+screen while you edit; circulation is a first-class design choice
+(thermosiphon / open stirring / guided serpentine plates) with a ν(T) curve
+for the chosen fluid. Improve opens with a fully interactive Predictor
+(what-if sliders, instant re-solve, delta cards). A new Ideas tab compares
+concepts against the live baseline, seeded with the serpentine-plate idea:
+plates between rows act as conduction fins (fin-efficiency model, contact
+factor) and guide parallel manifolded channels driven by a ~0.5 W pump
+(slot-flow pressure drop); forced flow reaches every tight gap and the
+distributed sink cuts stratification. FEA findings now render as three
+charts in Validate. Chart toolbars gain drawing tools; time charts use
+unified hover. Learn gains a circulation-options panel.

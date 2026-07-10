@@ -123,3 +123,16 @@ full narrative design report (executive summary, design, heat journey, duty,
 scaling, uniformity and safety, validation - each with improvement actions
 and live figures) and exports it as standalone interactive HTML.
 Mass audit moved to Design. Sidebar simplified.
+
+## v6: visual redesign
+One design system, applied everywhere: gradient hero header with a live
+status chip, KPI cards with large numerals (replacing default metrics),
+pill-style tab navigation, soft-shadow white cards for every section,
+Inter typography, and a single global plotly template (clean light grid,
+modern colorway) so all charts share one look. Chart semantics kept but
+refreshed: cell red #EF4444, oil amber #F59E0B, water sky #0EA5E9, brand
+indigo/cyan for structure. Sidebar status is a card; station progress bars
+use the brand gradient; the HTML report export matches. No physics or
+widget-key changes: saved designs load unchanged. All styling lives in the
+single CSS block and the "packlab" plotly template at the top of app.py,
+so re-theming (including dark mode) is a one-block edit.

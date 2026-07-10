@@ -22,6 +22,20 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
+import plotly.io as pio
+
+pio.templates["packlab"] = go.layout.Template(layout=dict(
+    font=dict(family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif",
+              size=13, color="#334155"),
+    title=dict(font=dict(size=15, color="#0F172A")),
+    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+    colorway=["#6366F1", "#06B6D4", "#F59E0B", "#EF4444", "#10B981",
+              "#8B5CF6", "#64748B"],
+    xaxis=dict(gridcolor="#EEF2F7", zerolinecolor="#E2E8F0", linecolor="#E2E8F0"),
+    yaxis=dict(gridcolor="#EEF2F7", zerolinecolor="#E2E8F0", linecolor="#E2E8F0"),
+    legend=dict(bgcolor="rgba(0,0,0,0)"),
+    margin=dict(l=20, r=20, t=48, b=20)))
+pio.templates.default = "packlab" 
 
 G = 9.81
 T_REF = 25.0          # deg C reference for tabulated properties
@@ -645,17 +659,79 @@ def sensitivity(d, g, fl, cool_df, T_amb, C_duty, T_limit) -> pd.DataFrame:
 # ------------------------------------------------------------------ #
 #  UI helpers                                                         #
 # ------------------------------------------------------------------ #
-ACCENT, INK, PAPER = "#E8A13A", "#22303B", "#FAF7F2"
+ACCENT, INK, PAPER = "#F59E0B", "#0F172A", "#F7F8FA"
+BRAND_A, BRAND_B = "#6366F1", "#06B6D4"
 CSS = f"""
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+  html, body, .stApp, [class*="css"] {{
+      font-family: Inter, -apple-system, 'Segoe UI', Roboto, sans-serif; }}
   .stApp {{ background: {PAPER}; }}
-  h1, h2, h3 {{ color: {INK}; letter-spacing: -0.01em; }}
-  [data-testid="stMetricValue"] {{ color: {INK}; }}
-  [data-testid="stSidebar"] {{ background: #F1EBE1; }}
-  div[data-testid="stMetric"] {{ background: #FFFFFF; border: 1px solid #E6DFD2;
-      border-left: 4px solid {ACCENT}; border-radius: 6px; padding: 8px 12px; }}
-  .small-note {{ color:#6B7680; font-size:0.85rem; }}
+  h1, h2, h3, h4 {{ color: {INK}; letter-spacing: -0.02em; font-weight: 700; }}
+  /* hero */
+  .hero {{ padding: 18px 22px; border-radius: 18px; margin-bottom: 6px;
+      background: linear-gradient(120deg, {BRAND_A} 0%, {BRAND_B} 100%);
+      color: white; box-shadow: 0 8px 24px rgba(99,102,241,.25); }}
+  .hero h1 {{ color: white; margin: 0; font-size: 1.55rem; }}
+  .hero p {{ margin: 4px 0 0 0; opacity: .85; font-size: .9rem; }}
+  .chip {{ display:inline-block; padding: 3px 12px; border-radius: 999px;
+      font-size: .78rem; font-weight: 600; margin-top: 8px;
+      background: rgba(255,255,255,.18); border:1px solid rgba(255,255,255,.35);}}
+  .chip.bad {{ background:#FEE2E2; color:#B91C1C; border-color:#FCA5A5; }}
+  .chip.ok  {{ background:#DCFCE7; color:#15803D; border-color:#86EFAC; }}
+  /* KPI cards */
+  .kpis {{ display:flex; gap: 12px; flex-wrap: wrap; margin: 10px 0 4px 0; }}
+  .kpi {{ flex:1 1 140px; background:#FFFFFF; border:1px solid #E7EAF0;
+      border-radius: 14px; padding: 12px 14px;
+      box-shadow: 0 1px 3px rgba(16,24,40,.05); }}
+  .kpi .l {{ font-size:.68rem; font-weight:600; letter-spacing:.06em;
+      text-transform: uppercase; color:#64748B; }}
+  .kpi .v {{ font-size:1.45rem; font-weight:800; color:{INK};
+      margin: 2px 0 0 0; line-height:1.15; }}
+  .kpi .v.ok {{ color:#15803D; }} .kpi .v.bad {{ color:#B91C1C; }}
+  .kpi .v.brand {{ background: linear-gradient(120deg,{BRAND_A},{BRAND_B});
+      -webkit-background-clip:text; background-clip:text; color:transparent; }}
+  .kpi .s {{ font-size:.75rem; color:#64748B; margin-top:2px; }}
+  /* tabs as pills */
+  .stTabs [data-baseweb="tab-list"] {{ gap: 6px; border-bottom: none;
+      flex-wrap: wrap; }}
+  .stTabs [data-baseweb="tab"] {{ background:#FFFFFF; border:1px solid #E7EAF0;
+      border-radius: 999px; padding: 6px 16px; color:#475569;
+      font-weight:600; font-size:.86rem; }}
+  .stTabs [aria-selected="true"] {{
+      background: linear-gradient(120deg,{BRAND_A},{BRAND_B}) !important;
+      color: white !important; border-color: transparent !important; }}
+  .stTabs [data-baseweb="tab-highlight"], .stTabs [data-baseweb="tab-border"]
+      {{ display:none; }}
+  /* cards (bordered containers) */
+  [data-testid="stVerticalBlockBorderWrapper"] {{ background:#FFFFFF;
+      border:1px solid #E7EAF0 !important; border-radius:16px !important;
+      box-shadow: 0 1px 3px rgba(16,24,40,.05);
+      padding: 6px 10px !important; }}
+  /* sidebar */
+  [data-testid="stSidebar"] {{ background:#FFFFFF;
+      border-right:1px solid #E7EAF0; }}
+  /* buttons */
+  .stButton > button, .stDownloadButton > button {{ border-radius: 10px;
+      border:1px solid #E7EAF0; font-weight:600; }}
+  .stButton > button[kind="primary"] {{
+      background: linear-gradient(120deg,{BRAND_A},{BRAND_B}); border:none; }}
+  /* expanders */
+  [data-testid="stExpander"] {{ border:1px solid #E7EAF0; border-radius:12px;
+      background:#FFFFFF; }}
+  /* progress */
+  [data-testid="stProgress"] > div > div > div {{
+      background: linear-gradient(90deg,{BRAND_A},{BRAND_B}); }}
+  .small-note {{ color:#64748B; font-size:0.84rem; }}
 </style>"""
+
+def kpi_cards(items):
+    """items: list of (label, value, sub, tone in '', 'ok', 'bad', 'brand')."""
+    cells = "".join(
+        f"<div class='kpi'><div class='l'>{l}</div>"
+        f"<div class='v {t}'>{v}</div><div class='s'>{s}</div></div>"
+        for l, v, s, t in items)
+    st.markdown(f"<div class='kpis'>{cells}</div>", unsafe_allow_html=True)
 
 DEFAULTS = dict(
     Ns=108, Np=10, cap_Ah=5.0, v_nom=3.7, r_dc=25.0, m_cell=0.070, cp_cell=950.0,
@@ -691,13 +767,13 @@ def resistance_chart(res):
     fig = go.Figure(go.Bar(
         y=[n for n, _ in items][::-1], x=[v * 1000 for _, v in items][::-1],
         orientation="h",
-        marker_color=["#C0392B" if n == worst else "#4A6FA5" for n, _ in items][::-1],
+        marker_color=["#EF4444" if n == worst else "#6366F1" for n, _ in items][::-1],
         text=[f"{v*1000:.2f} mK/W  ({100*v/tot:.0f}%)" for _, v in items][::-1],
         textposition="outside"))
     fig.update_layout(height=260, margin=dict(l=10, r=10, t=30, b=10),
                       title="Where the resistance lives (cell -> water chain)",
                       xaxis_title="Thermal resistance [mK/W]",
-                      plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)")
+                      plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)")
     return fig, worst
 
 def waterfall_chart(res, Q, d):
@@ -711,19 +787,19 @@ def waterfall_chart(res, Q, d):
     fig = go.Figure(go.Waterfall(
         x=[s[0] for s in steps], measure=[s[2] for s in steps],
         y=[s[1] if s[1] is not None else 0 for s in steps],
-        connector=dict(line=dict(color="#9AA5AF")),
+        connector=dict(line=dict(color="#94A3B8")),
         increasing=dict(marker=dict(color=ACCENT)),
         totals=dict(marker=dict(color=INK))))
     fig.update_layout(height=330, margin=dict(l=10, r=10, t=30, b=10),
                       title="Temperature waterfall at this duty [degC]",
-                      yaxis_title="degC", plot_bgcolor="white",
+                      yaxis_title="degC", plot_bgcolor="rgba(255,255,255,0)",
                       paper_bgcolor="rgba(0,0,0,0)", showlegend=False)
     return fig
 
 def chain_schematic(res, Q):
     boxes = [("CELL", "#D96C4F"), ("oil film", "#F3D9A4"), ("BULK OIL", ACCENT),
-             ("oil film", "#F3D9A4"), ("TUBE+FINS", "#B08D57"), ("wall", "#8C8C8C"),
-             ("water film", "#BFD9EA"), ("WATER", "#4A90C4")]
+             ("oil film", "#F3D9A4"), ("TUBE+FINS", "#D97706"), ("wall", "#8C8C8C"),
+             ("water film", "#BFD9EA"), ("WATER", "#0EA5E9")]
     drops = [None, Q * res["R_b"], None, res["Q_w"] * res["R_ot"], None,
              res["Q_w"] * res["R_wall"], res["Q_w"] * res["R_in"], None]
     fig = go.Figure()
@@ -736,12 +812,12 @@ def chain_schematic(res, Q):
                            font=dict(size=12, color=INK))
         if dT is not None:
             fig.add_annotation(x=x + w / 2, y=1.18, text=f"dT = {dT:.1f} K",
-                               showarrow=False, font=dict(size=11, color="#C0392B"))
+                               showarrow=False, font=dict(size=11, color="#EF4444"))
         x += w + 0.12
     fig.add_annotation(x=x / 2, y=-0.28, showarrow=False,
                        text="Heat flows left to right. The films are where the kelvins are spent; "
                             "the bulk oil and copper are nearly free.",
-                       font=dict(size=11, color="#6B7680"))
+                       font=dict(size=11, color="#64748B"))
     fig.update_xaxes(visible=False); fig.update_yaxes(visible=False, range=[-0.5, 1.5])
     fig.update_layout(height=210, margin=dict(l=5, r=5, t=10, b=5),
                       plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
@@ -875,7 +951,7 @@ def layout_figure(d, g):
         yj = (j + 0.5) * g["Ly"] / d["n_tubes"]
         fig.add_trace(go.Scatter(x=[d["manifold_margin"], g["Lx"] - d["manifold_margin"]],
                                  y=[yj, yj], mode="lines", showlegend=False,
-                                 line=dict(color="#4A90C4", width=3), hoverinfo="skip"))
+                                 line=dict(color="#0EA5E9", width=3), hoverinfo="skip"))
     fig.update_yaxes(scaleanchor="x", scaleratio=1, visible=False)
     fig.update_xaxes(visible=False)
     fig.update_layout(height=560, margin=dict(l=10, r=10, t=40, b=10),
@@ -920,21 +996,21 @@ def arch_tab(d, g, fl, masses, C_steady):
         cA, cB = st.columns(2)
         with cA:
             figA = go.Figure(go.Bar(x=adf["Architecture"], y=adf["T_cell"],
-                                    marker_color=[ACCENT, "#B08D57", "#4A6FA5", "#2E7D52"],
+                                    marker_color=[ACCENT, "#D97706", "#6366F1", "#10B981"],
                                     text=[f"{v:.1f}" for v in adf["T_cell"]],
                                     textposition="outside"))
-            figA.add_hline(y=d["T_limit"], line_dash="dash", line_color="#7A1F1F")
+            figA.add_hline(y=d["T_limit"], line_dash="dash", line_color="#B91C1C")
             figA.update_layout(height=380, title="Steady cell temperature [degC]",
-                               plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)",
+                               plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",
                                xaxis_tickangle=-15)
             st.plotly_chart(figA, use_container_width=True)
         with cB:
             figP = go.Figure(go.Bar(x=adf["Architecture"], y=adf["Parasitic_W"],
-                                    marker_color="#6B7680",
+                                    marker_color="#64748B",
                                     text=[f"{v:.0f} W" for v in adf["Parasitic_W"]],
                                     textposition="outside"))
             figP.update_layout(height=380, title="Parasitic power [W] (chiller excluded)",
-                               plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)",
+                               plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",
                                xaxis_tickangle=-15)
             st.plotly_chart(figP, use_container_width=True)
         st.caption("Cold-plate constants: axial cell path ~3.6 K/W, TIM 0.8 K/W, channel film "
@@ -983,12 +1059,12 @@ def coolant_tab(d, g, cool_df):
                                       textposition="top center", name=fam,
                                       textfont=dict(size=11),
                                       marker=dict(size=9 + 40 * grp["k"] / sdf["k"].max())))
-        figS.add_hline(y=d["T_limit"], line_dash="dash", line_color="#7A1F1F")
+        figS.add_hline(y=d["T_limit"], line_dash="dash", line_color="#B91C1C")
         figS.update_layout(height=460, title="Cooler is down, lighter is left "
                            "(size ~ conductivity; hover for every fluid)",
                            xaxis_title="Coolant mass on board [kg]",
                            yaxis_title="Steady cell temperature [degC]",
-                           plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)")
+                           plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(figS, use_container_width=True)
         st.caption("The fluorinated fluids win on h despite 5x lower conductivity (Ra ~ 1/nu, "
                    "and note their stronger thermosiphon in the u_ts column) but lose on "
@@ -1052,7 +1128,7 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop):
                                yaxis_title="Natural-convection h on a 21700 [W/m2K]",
                                title="Ra ~ 1/nu, h ~ Ra^(1/4-1/6): viscosity is the strong "
                                      "axis (hover for every fluid)",
-                               plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)")
+                               plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)")
             st.plotly_chart(figV, use_container_width=True)
             st.caption("This reproduces Wang et al.'s HFE7100 result: 1% of the viscosity "
                        "beat 5x lower conductivity. But the whole y-axis spans barely a "
@@ -1067,7 +1143,7 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop):
             figG.update_layout(height=300, xaxis_title="Cell-to-cell gap [mm]",
                                yaxis_title="h penalty factor",
                                title="Below ~6 mm the buoyant flow in the gaps is throttled",
-                               plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)")
+                               plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)")
             st.plotly_chart(figG, use_container_width=True)
             st.caption("Wang et al. measured gap velocity falling 1.8 -> 0.5 mm/s as spacing "
                        "shrank 8 -> 2 mm; temperature climbed steeply below 6 mm. This is the "
@@ -1093,7 +1169,7 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop):
                                            side="right", range=[0, 1.05]),
                                title="Oil's low h keeps even long thin fins ~90% efficient: "
                                      "fin hard",
-                               plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)",
+                               plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",
                                legend=dict(orientation="h", y=1.15))
             st.plotly_chart(figF, use_container_width=True)
         with st.expander("6. Stirring and the thermosiphon floor"):
@@ -1107,17 +1183,17 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop):
                            * d["cal_h"])
             figU = go.Figure()
             figU.add_trace(go.Scatter(x=us * 100, y=hcs, name="Cell film",
-                                      line=dict(color="#C0392B", width=3)))
+                                      line=dict(color="#EF4444", width=3)))
             figU.add_trace(go.Scatter(x=us * 100, y=hts, name="Tube film",
-                                      line=dict(color="#4A6FA5", width=3)))
+                                      line=dict(color="#6366F1", width=3)))
             figU.add_vline(x=d["u_oil"] * 100, line_dash="dash", annotation_text="your stirring")
-            figU.add_vline(x=res["u_ts"] * 100, line_dash="dot", line_color="#2E7D52",
+            figU.add_vline(x=res["u_ts"] * 100, line_dash="dot", line_color="#10B981",
                            annotation_text=f"thermosiphon {res['u_ts']*1000:.1f} mm/s")
             figU.update_layout(height=320, xaxis_title="Oil velocity [cm/s]",
                                yaxis_title="h [W/m2K]",
                                title="The pack stirs itself a little; a circulator does it "
                                      "properly",
-                               plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)",
+                               plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",
                                legend=dict(orientation="h", y=1.15))
             st.plotly_chart(figU, use_container_width=True)
             st.caption(f"Predicted self-circulation: buoyant head rho*beta*g*H*dT against "
@@ -1133,16 +1209,16 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop):
                 md = q / 60 * loop["rho"] / 1000 / max(d["n_tubes"], 1)
                 w = h_water_inside(loop, md, g["d_i"], g["L_tube"])
                 hws.append(w["h"]); res_w.append(w["Re"])
-            figW = go.Figure(go.Scatter(x=fls, y=hws, line=dict(color="#4A90C4", width=3)))
+            figW = go.Figure(go.Scatter(x=fls, y=hws, line=dict(color="#0EA5E9", width=3)))
             figW.add_vline(x=d["flow_lpm"], line_dash="dash", annotation_text="your flow")
             i2300 = int(np.argmin(np.abs(np.array(res_w) - 2300)))
-            figW.add_vline(x=fls[i2300], line_dash="dot", line_color="#7A1F1F",
+            figW.add_vline(x=fls[i2300], line_dash="dot", line_color="#B91C1C",
                            annotation_text="Re 2300")
             figW.update_layout(height=320, xaxis_title="Total water flow [L/min]",
                                yaxis_title="h inside tube [W/m2K]",
                                title="In laminar flow Nu is ~constant: pumping harder does "
                                      "nothing until you trip turbulence",
-                               plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)")
+                               plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)")
             st.plotly_chart(figW, use_container_width=True)
         with st.expander("8. Buffering: the oil is a thermal flywheel"):
             cQ, cT = st.columns(2)
@@ -1163,7 +1239,7 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop):
             figD.update_layout(height=300, xaxis_title="Cell temperature [degC]",
                                yaxis_title="DCIR [mOhm]",
                                title=f"R(T) = R25 exp(-{d['k_dcir']*100:.1f}%/K x (T-25))",
-                               plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)")
+                               plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)")
             st.plotly_chart(figD, use_container_width=True)
             st.markdown(f"Running at {res['T_b']:.0f} degC instead of 25 cuts heat generation "
                         f"by **{100*(1-r_of_T(d, res['T_b'])/d['r_dc']):.0f}%** at the same "
@@ -1210,12 +1286,12 @@ def improve_core(d, g, fl, masses, res, Q_duty, C_steady, cool_df):
                 sens, base_T = sensitivity(d, g, fl, cool_df, d["T_amb"], C_steady, d["T_limit"])
             figSe = go.Figure(go.Bar(
                 y=sens["change"], x=sens["dT"], orientation="h",
-                marker_color=np.where(sens["dT"] < 0, "#2E7D52", "#C0392B"),
+                marker_color=np.where(sens["dT"] < 0, "#10B981", "#EF4444"),
                 text=[f"{v:+.1f} K" for v in sens["dT"]], textposition="outside"))
             figSe.add_vline(x=0, line_color=INK)
             figSe.update_layout(height=380, title=f"Change in steady cell T from "
                                 f"{base_T:.1f} degC at {C_steady:.2f}C rms (left = cooler)",
-                                xaxis_title="dT_cell [K]", plot_bgcolor="white",
+                                xaxis_title="dT_cell [K]", plot_bgcolor="rgba(255,255,255,0)",
                                 paper_bgcolor="rgba(0,0,0,0)",
                                 margin=dict(l=10, r=60, t=40, b=10))
             st.plotly_chart(figSe, use_container_width=True)
@@ -1322,19 +1398,19 @@ def bench_wang_tab():
                      hide_index=True, use_container_width=True)
         figB = go.Figure()
         figB.add_trace(go.Scatter(x=bm["t"] / 60, y=bm["T_b"], name="Cell (this app)",
-                                  line=dict(color="#C0392B", width=3)))
+                                  line=dict(color="#EF4444", width=3)))
         figB.add_trace(go.Scatter(x=bm["t"] / 60, y=bm["T_il"], name="Oil (this app)",
                                   line=dict(color=ACCENT, width=3)))
         figB.add_trace(go.Scatter(x=[30], y=[32.3], mode="markers",
                                   name="Paper: cell at 1800 s",
-                                  marker=dict(color="#7A1F1F", size=12, symbol="x")))
+                                  marker=dict(color="#B91C1C", size=12, symbol="x")))
         figB.add_trace(go.Scatter(x=[30], y=[28.5], mode="markers",
                                   name="Paper: oil at 1800 s",
-                                  marker=dict(color="#B08D57", size=12, symbol="x")))
+                                  marker=dict(color="#D97706", size=12, symbol="x")))
         figB.update_layout(height=380, xaxis_title="Time [min]",
                            yaxis_title="Temperature [degC]",
                            title="Transient rebuild of the paper's 2C experiment",
-                           plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)",
+                           plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",
                            legend=dict(orientation="h", y=1.12))
         st.plotly_chart(figB, use_container_width=True)
         st.markdown("""
@@ -1371,12 +1447,12 @@ def bench_prod_tab(masses, Cmax):
                 x=[r_["Whkg"]], y=[r_["kW/kg"]], mode="markers+text", text=[r_["Pack"]],
                 textposition="top center", showlegend=False,
                 marker=dict(size=16 if r_["Pack"] == "This design" else 11,
-                            color=ACCENT if r_["Pack"] == "This design" else "#6B7680")))
+                            color=ACCENT if r_["Pack"] == "This design" else "#64748B")))
         figPk.update_layout(height=420, xaxis_title="Pack energy density [Wh/kg]",
                             yaxis_title="Peak power density [kW/kg] (vehicle rating)",
                             title="Energy vs power density - immersion trades energy density "
                                   "for simplicity and abuse tolerance",
-                            plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)")
+                            plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(figPk, use_container_width=True)
         st.caption("Sources, retrieved July 2026: Model 3 2170 = Rickard teardown "
                    "(Teslarati/EVANNEX, 478 kg, 4416 cells, ~75 kWh usable, glycol ribbon "
@@ -1782,7 +1858,7 @@ def report_html(d, g, fl, res, masses, Cmax, figs) -> str:
 <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
 <title>Immersion Pack Lab report</title>
 <style>body{{font-family:Georgia,serif;max-width:960px;margin:2em auto;color:#1F2933}}
-h1{{border-bottom:3px solid #E8A13A}}table{{border-collapse:collapse;margin:1em 0}}</style>
+h1{{border-bottom:3px solid #F59E0B}}table{{border-collapse:collapse;margin:1em 0}}</style>
 </head><body><h1>Immersion Pack Lab - design report</h1>
 <p>Generated by the app; model honesty: oil-side h +/-30% unless calibrated.
 Wang et al. 2023 benchmark: 33.0 vs 32.3 degC measured.</p>
@@ -1868,10 +1944,10 @@ def pack_3d_figure(d, g, show_oil=True, show_tubes=True, show_box=True,
             if d["fins_on"] and show_fins:
                 _add_cyl_x(Vf, Ff, If_, x0, x1, yj, zj,
                            d["tube_od"] / 2 + d["fin_h"], 1.0, n=10)
-        fig.add_trace(_mesh(Vt, Ft, It, colorscale=[[0, "#B87333"], [1, "#B87333"]],
+        fig.add_trace(_mesh(Vt, Ft, It, colorscale=[[0, "#D97706"], [1, "#D97706"]],
                             showscale=False, name="tubes"))
         if Vf:
-            fig.add_trace(_mesh(Vf, Ff, If_, colorscale=[[0, "#8A9BA8"], [1, "#8A9BA8"]],
+            fig.add_trace(_mesh(Vf, Ff, If_, colorscale=[[0, "#A5B4CC"], [1, "#A5B4CC"]],
                                 showscale=False, opacity=0.28, name="fin envelope"))
     # --- oil fill ---
     if show_oil:
@@ -1880,7 +1956,7 @@ def pack_3d_figure(d, g, show_oil=True, show_tubes=True, show_box=True,
         ys = [0, 0, g["Ly"], g["Ly"], 0, 0, g["Ly"], g["Ly"]]
         zs = [0, 0, 0, 0, fz, fz, fz, fz]
         fig.add_trace(go.Mesh3d(x=xs, y=ys, z=zs, alphahull=0, opacity=0.13,
-                                color="#E8A13A", name="oil", hoverinfo="skip"))
+                                color="#F59E0B", name="oil", hoverinfo="skip"))
     # --- enclosure wireframe ---
     if show_box:
         Lx, Ly, Lz = g["Lx"], g["Ly"], g["Lz"]
@@ -2072,17 +2148,17 @@ def duty_inputs() -> dict:
 def main():
     st.set_page_config(page_title="Immersion Pack Lab", layout="wide", page_icon=None)
     st.markdown(CSS, unsafe_allow_html=True)
-    st.title("Immersion Pack Lab")
     for _k, _v in st.session_state.pop("_pending", {}).items():
         st.session_state[_k] = _v
+    hero_box = st.container()
     kpi_box = st.container()
 
     if "cool_df" not in st.session_state:
         st.session_state.cool_df = _read_coolants()
     cool_df = st.session_state.cool_df
 
-    tabs = st.tabs(["1 Design", "2 Duty", "3 Results", "4 Improve", "5 Safety",
-                    "6 Compare", "7 Learn", "8 Validate and tune", "9 Report"])
+    tabs = st.tabs(["Design", "Duty", "Results", "Improve", "Safety",
+                    "Compare", "Learn", "Validate", "Report"])
 
     with tabs[0]:
         st.caption("Define the pack. The status bar above and the 3D view below update live.")
@@ -2135,30 +2211,46 @@ def main():
     Q_bus = (C_steady * d["cap_Ah"] * d["Np"]) ** 2 * tr["bus"]["R"]
     chil = chiller_model(res["Q_w"] + P_pump, d["T_water_in"], d["T_amb"])
 
-    # ---------------- KPI strip ---------------- #
+    # ---------------- hero + KPI cards ---------------- #
+    T_gov = res["T_core"] if d["limit_core"] else res["T_b"]
+    ok = T_gov <= d["T_limit"]
+    with hero_box:
+        st.markdown(
+            f"<div class='hero'><h1>Immersion Pack Lab</h1>"
+            f"<p>{masses['E_kwh']:.1f} kWh / {d['Ns']*d['v_nom']:.0f} V - "
+            f"{g['N']} x {d['fmt']} in {fl['name']} - {d['duty']}"
+            f"{(' / ' + d['cycle']) if d['duty'] == 'Drive cycle' else ''}</p>"
+            f"<span class='chip {'ok' if ok else 'bad'}'>"
+            f"{'WITHIN LIMIT' if ok else 'OVER LIMIT'} - "
+            f"{T_gov:.1f} / {d['T_limit']:.0f} degC at {C_steady:.2f}C rms"
+            f"</span></div>", unsafe_allow_html=True)
     with kpi_box:
-        k1, k2, k3, k4, k5, k6 = st.columns(6)
-        k1.metric("Pack", f"{masses['E_kwh']:.1f} kWh / {d['Ns']*d['v_nom']:.0f} V",
-                  f"{g['N']} x {d['fmt']}")
-        k2.metric(f"Can / core at {C_steady:.2f}C rms",
-                  f"{res['T_b']:.1f} / {res['T_core']:.1f}",
-                  f"{(res['T_core'] if d['limit_core'] else res['T_b'])-d['T_limit']:+.1f} vs limit",
-                  delta_color="inverse")
-        k3.metric("Max continuous", f"{Cmax:.2f} C", f"to {d['T_limit']:.0f} degC")
-        k4.metric("Heat at duty", f"{Q_duty/1000:.2f} kW",
-                  f"parasitic {P_pump+P_stir:.0f} W")
-        k5.metric("Coolant", f"{masses['V_oil_L']:.0f} L", f"{masses['m_oil']:.0f} kg")
-        k6.metric("Mass", f"{masses['m_pack']:.0f} kg",
-                  f"{masses['whkg_pack']:.0f} Wh/kg | {masses['whl_pack']:.0f} Wh/L")
+        kpi_cards([
+            ("Cell can / core", f"{res['T_b']:.1f} / {res['T_core']:.1f}",
+             f"{T_gov-d['T_limit']:+.1f} K vs limit", "ok" if ok else "bad"),
+            ("Max continuous", f"{Cmax:.2f} C", f"to {d['T_limit']:.0f} degC",
+             "brand"),
+            ("Heat at duty", f"{Q_duty/1000:.2f} kW",
+             f"chiller ~{chil['P_el']/1000:.2f} kW el", ""),
+            ("Parasitics", f"{P_pump+P_stir:.0f} W",
+             f"pump {P_pump:.1f}" + (f" + stir {P_stir:.1f}" if P_stir > 0 else ""),
+             ""),
+            ("Coolant", f"{masses['V_oil_L']:.0f} L",
+             f"{masses['m_oil']:.0f} kg {fl['name'].split('(')[0].strip()}", ""),
+            ("Pack mass", f"{masses['m_pack']:.0f} kg",
+             f"{masses['whkg_pack']:.0f} Wh/kg | {masses['whl_pack']:.0f} Wh/L",
+             ""),
+        ])
 
     # ---------------- sidebar: status, save/load, report ---------------- #
     sb = st.sidebar
-    sb.markdown("### Design status")
-    ok = (res["T_core"] if d["limit_core"] else res["T_b"]) <= d["T_limit"]
-    sb.markdown(f"{'##### Within limit' if ok else '##### OVER LIMIT'}  \n"
-                f"{res['T_b']:.1f} degC at {C_steady:.2f}C rms vs {d['T_limit']:.0f} limit  \n"
-                f"Thermosiphon {res['u_ts']*1000:.1f} mm/s, spread {res['spread']:.1f} K  \n"
-                f"Fluid: {fl['name']}")
+    sb.markdown(
+        f"<div class='kpi'><div class='l'>Design status</div>"
+        f"<div class='v {'ok' if ok else 'bad'}'>"
+        f"{'Within limit' if ok else 'Over limit'}</div>"
+        f"<div class='s'>{res['T_b']:.1f} degC at {C_steady:.2f}C rms - "
+        f"thermosiphon {res['u_ts']*1000:.1f} mm/s - spread "
+        f"{res['spread']:.1f} K</div></div>", unsafe_allow_html=True)
     if not ok:
         sb.error("Over limit - see Improve tab.")
     sb.markdown("---")
@@ -2177,7 +2269,7 @@ def main():
                 st.session_state["applied_design"] = sig
                 st.rerun()
     # (full narrative report lives in tab 9; sidebar keeps a shortcut)
-    sb.caption("Full narrative report: tab 9.")
+    sb.caption("Full narrative report: Report tab.")
     sb.caption("Wang et al. 2023 benchmark: 33.0 vs 32.3 degC. Oil-side h honest to "
                "+/-30% until calibrated (tab 8).")
 
@@ -2221,11 +2313,11 @@ def main():
         with cplot:
             if spec["kind"] == "P":
                 figV = go.Figure(go.Scatter(x=spec["t"]/60, y=spec["v"]*3.6,
-                                            line=dict(color="#4A6FA5", width=2)))
+                                            line=dict(color="#6366F1", width=2)))
                 figV.update_layout(height=200, margin=dict(l=10, r=10, t=30, b=10),
                                    title=f"{d['cycle']} speed trace",
                                    xaxis_title="min", yaxis_title="km/h",
-                                   plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)")
+                                   plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)")
                 st.plotly_chart(figV, use_container_width=True)
             band = st.checkbox("Show +/-30% oil-film band", False)
             figT = go.Figure()
@@ -2240,24 +2332,24 @@ def main():
                     fill="toself", fillcolor="rgba(192,57,43,0.12)",
                     line=dict(width=0), name="h +/-30%", hoverinfo="skip"))
             figT.add_trace(go.Scatter(x=tr["t"]/60, y=tr["T_core"], name="Core",
-                                      line=dict(color="#7A1F1F", width=2, dash="dot")))
+                                      line=dict(color="#B91C1C", width=2, dash="dot")))
             figT.add_trace(go.Scatter(x=tr["t"]/60, y=tr["T_b"], name="Cell surface",
-                                      line=dict(color="#C0392B", width=3)))
+                                      line=dict(color="#EF4444", width=3)))
             figT.add_trace(go.Scatter(x=tr["t"]/60, y=tr["T_il"], name="Bulk oil",
                                       line=dict(color=ACCENT, width=3)))
-            figT.add_hline(y=d["T_limit"], line_dash="dash", line_color="#7A1F1F")
+            figT.add_hline(y=d["T_limit"], line_dash="dash", line_color="#B91C1C")
             figT.add_trace(go.Scatter(x=t_arr/60, y=C_arr, name="C-rate", yaxis="y2",
-                                      line=dict(color="#9AA5AF", dash="dot")))
+                                      line=dict(color="#94A3B8", dash="dot")))
             if d["duty"] != "Constant C" or d.get("track_soc"):
                 figT.add_trace(go.Scatter(x=tr["t"]/60, y=tr["soc"]*4, yaxis="y2",
-                                          name="SoC (x4)", line=dict(color="#2E7D52", width=2)))
+                                          name="SoC (x4)", line=dict(color="#10B981", width=2)))
             figT.update_layout(height=380, xaxis_title="Time [min]",
                                yaxis_title="Temperature [degC]",
                                yaxis2=dict(title="C / SoCx4", overlaying="y", side="right",
                                            showgrid=False,
                                            range=[min(0, float(C_arr.min())*1.2),
                                                   max(float(np.abs(C_arr).max())*1.6, 4.2)]),
-                               plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)",
+                               plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",
                                legend=dict(orientation="h", y=1.14),
                                margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(figT, use_container_width=True)
@@ -2379,14 +2471,14 @@ def main():
     )
     figT_r = go.Figure()
     figT_r.add_trace(go.Scatter(x=tr["t"]/60, y=tr["T_core"], name="Core",
-                                line=dict(color="#7A1F1F", width=2, dash="dot")))
+                                line=dict(color="#B91C1C", width=2, dash="dot")))
     figT_r.add_trace(go.Scatter(x=tr["t"]/60, y=tr["T_b"], name="Cell",
-                                line=dict(color="#C0392B", width=3)))
+                                line=dict(color="#EF4444", width=3)))
     figT_r.add_trace(go.Scatter(x=tr["t"]/60, y=tr["T_il"], name="Oil",
                                 line=dict(color=ACCENT, width=3)))
-    figT_r.add_hline(y=d["T_limit"], line_dash="dash", line_color="#7A1F1F")
+    figT_r.add_hline(y=d["T_limit"], line_dash="dash", line_color="#B91C1C")
     figT_r.update_layout(height=320, xaxis_title="min",
-                         yaxis_title="degC", plot_bgcolor="white",
+                         yaxis_title="degC", plot_bgcolor="rgba(255,255,255,0)",
                          paper_bgcolor="rgba(0,0,0,0)",
                          legend=dict(orientation="h", y=1.15))
     figs_r["transient"] = figT_r
@@ -2420,11 +2512,11 @@ def main():
         if meas is not None:
             figM = go.Figure()
             figM.add_trace(go.Scatter(x=tr["t"]/60, y=tr["T_b"], name="Model",
-                                      line=dict(color="#C0392B", width=3)))
+                                      line=dict(color="#EF4444", width=3)))
             figM.add_trace(go.Scatter(x=meas[0]/60, y=meas[1], mode="markers",
                                       name="Measured", marker=dict(color=INK, size=5)))
             figM.update_layout(height=300, xaxis_title="min", yaxis_title="degC",
-                               plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)")
+                               plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)")
             st.plotly_chart(figM, use_container_width=True)
             if st.button("Fit oil-film calibration factor"):
                 with st.spinner("Sweeping 0.4-2.2..."):
@@ -2473,8 +2565,8 @@ def heat_sankey(res, Q_duty, Q_bus, P_pump, P_stir, chil):
            max(res["Q_w"] + P_pump + chil["P_el"], 1e-3)]
     fig = go.Figure(go.Sankey(
         node=dict(label=[f"{l}" for l in lab], pad=18, thickness=16,
-                  color=["#C0392B", "#B08D57", "#E8A13A", "#4A90C4", "#9AA5AF",
-                         "#4A6FA5", "#6B7680", "#2E7D52"]),
+                  color=["#EF4444", "#D97706", "#F59E0B", "#0EA5E9", "#94A3B8",
+                         "#6366F1", "#64748B", "#10B981"]),
         link=dict(source=src, target=dst, value=val,
                   label=[f"{v:.0f} W" for v in val])))
     fig.update_layout(height=300, margin=dict(l=10, r=10, t=30, b=10),
@@ -2571,18 +2663,18 @@ def setpoint_trade(d, g, fl, C_duty, T_amb):
     a = np.array(rows)
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=a[:, 0], y=a[:, 3], name="Chiller electrical [W]",
-                             line=dict(color="#4A6FA5", width=3)))
+                             line=dict(color="#6366F1", width=3)))
     fig.add_trace(go.Scatter(x=a[:, 0], y=a[:, 1], name="Cell T [degC]",
-                             yaxis="y2", line=dict(color="#C0392B", width=3)))
+                             yaxis="y2", line=dict(color="#EF4444", width=3)))
     fig.add_trace(go.Scatter(x=[a[0, 0], a[-1, 0]], y=[d["T_limit"]] * 2,
                              yaxis="y2", mode="lines", name="limit",
-                             line=dict(color="#7A1F1F", dash="dash")))
+                             line=dict(color="#B91C1C", dash="dash")))
     fig.update_layout(height=300, xaxis_title="Water inlet set point [degC]",
                       yaxis_title="Chiller electrical [W]",
                       yaxis2=dict(title="Cell T [degC]", overlaying="y",
                                   side="right", showgrid=False),
                       title=f"Set-point trade at {C_duty:.2f}C: COP vs DCIR",
-                      plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)",
+                      plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",
                       legend=dict(orientation="h", y=1.2),
                       margin=dict(l=10, r=10, t=50, b=10))
     return fig
@@ -2596,14 +2688,14 @@ def c_sweep_fig(d, g, fl, T_amb, C_now):
         Pel.append(chiller_model(r["Q_w"], d["T_water_in"], T_amb)["P_el"] / 1000)
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=Cs, y=Qs, name="Heat [kW]",
-                             line=dict(color="#C0392B", width=3)))
+                             line=dict(color="#EF4444", width=3)))
     fig.add_trace(go.Scatter(x=Cs, y=Pel, name="Chiller electrical [kW]",
-                             line=dict(color="#4A6FA5", width=3)))
+                             line=dict(color="#6366F1", width=3)))
     fig.add_trace(go.Scatter(x=Cs, y=Tb, name="Cell T [degC]", yaxis="y2",
-                             line=dict(color="#E8A13A", width=3)))
+                             line=dict(color="#F59E0B", width=3)))
     fig.add_trace(go.Scatter(x=[Cs[0], Cs[-1]], y=[d["T_limit"]] * 2,
                              yaxis="y2", mode="lines", name="limit",
-                             line=dict(color="#7A1F1F", dash="dash")))
+                             line=dict(color="#B91C1C", dash="dash")))
     fig.add_vline(x=C_now, line_dash="dot", annotation_text=f"duty {C_now:.2f}C")
     fig.update_layout(height=340, xaxis_title="Continuous C-rate",
                       yaxis_title="kW",
@@ -2611,7 +2703,7 @@ def c_sweep_fig(d, g, fl, T_amb, C_now):
                                   side="right", showgrid=False),
                       title="Scaling the same hardware with C "
                             "(heat ~ C^2, softened by DCIR(T))",
-                      plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)",
+                      plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",
                       legend=dict(orientation="h", y=1.15),
                       margin=dict(l=10, r=10, t=60, b=10))
     return fig
@@ -2760,8 +2852,8 @@ def export_report_html(secs, figs) -> str:
 <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
 <title>Immersion Pack Lab - design report</title>
 <style>body{{font-family:Georgia,serif;max-width:1000px;margin:2em auto;
-color:#1F2933;line-height:1.5}}h1{{border-bottom:3px solid #E8A13A}}
-h2{{color:#7A4A1F;margin-top:1.6em}}</style></head><body>
+color:#1F2933;line-height:1.5}}h1{{border-bottom:3px solid #F59E0B}}
+h2{{color:#4F46E5;margin-top:1.6em}}</style></head><body>
 <h1>Immersion Pack Lab - design report</h1>{body}
 <p style="font-size:.85em;color:#666">Generated by Immersion Pack Lab v5.
 Sources: Wang 2023 (J. Energy Storage 62, 106821); teardown data per the

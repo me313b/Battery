@@ -193,3 +193,18 @@ gains a time scrubber with a live readout card (can/core, C, SoC, oil,
 heat at the picked instant). Design's three input groups are collapsed
 expanders whose titles show the live key values. No API or internet is
 required for any of this; livepack.py ships alongside app.py.
+
+## v8.1: units in °C, richer Compare, plain-words Learn
+Temperature differences now read in °C everywhere (spread, margins,
+core-to-can, water rise, station tolls); compound units like W/m²·K and
+kJ/K stay, and the Learn narrative explains that a 1 K difference equals a
+1 °C difference. Compare's density map is grouped by energy class (City /
+Mid / Large / Flagship) with legend on/off and double-click isolation, plus
+toggleable median-crosshair and interquartile zones; a new explorer plots
+any two database quantities with per-class colours, optional log axis and a
+trend line, with this design overlaid where comparable; a head-to-head
+radar duels up to four chosen packs against this design across five
+normalised metrics (with the continuous-vs-10 s power caveat stated). Learn
+opens with "Where the heat goes - the whole story in plain words": a
+seven-step narrative using the live numbers, ending with what matters,
+what doesn't, and the current biggest toll.

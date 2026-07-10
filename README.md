@@ -157,3 +157,12 @@ factor) and guide parallel manifolded channels driven by a ~0.5 W pump
 distributed sink cuts stratification. FEA findings now render as three
 charts in Validate. Chart toolbars gain drawing tools; time charts use
 unified hover. Learn gains a circulation-options panel.
+
+## v7.1: BEV pack benchmark database
+Compare now loads pack_benchmark.xlsx (user-supplied batterydesign.net
+export, 58 BEV road-car packs): filterable energy-density map (Wh/kg vs
+Wh/L, bubble = kWh, colour = 10 s C-rate), power-vs-energy chart with the
+honest 10 s vs continuous caveat, ranked field vs this design, cell-to-pack
+ratio comparison, full table with CSV export, percentile cards and a
+nearest-neighbour summary. The FEA-honest enclosure variant plots as a
+second marker. Keep pack_benchmark.xlsx next to app.py.

@@ -1654,6 +1654,12 @@ def smoke():
     fc = thermal_circuit_fig(d, g, fl, res, res["Q_eff"])
     assert len(fc.layout.shapes) >= 6
     nu_T_fig(fl)
+    bmdf = load_benchmark()
+    assert bmdf is not None and len(bmdf) >= 50
+    assert bmdf["whkg"].notna().sum() >= 50 and bmdf["whl"].notna().sum() >= 50
+    p_kg = 100 * (bmdf["whkg"].dropna() < masses["whkg_pack"]).mean()
+    print(f"benchmark db: {len(bmdf)} packs  whkg {bmdf['whkg'].min():.0f}-"
+          f"{bmdf['whkg'].max():.0f}  this design at {p_kg:.0f}th pct")
     print("SMOKE OK")
 
 
@@ -2677,7 +2683,10 @@ def main():
         st.subheader("Coolant shoot-out")
         coolant_tab(d, g, cool_df)
         st.markdown("---")
-        st.subheader("Production packs")
+        st.subheader("BEV road-car pack database")
+        fig_bm = benchmark_db_tab(d, g, masses, Cmax, res)
+        st.markdown("---")
+        st.subheader("Teardown cooling references")
         bench_prod_tab(masses, Cmax)
 
     # ---------------- Learn ---------------- #
@@ -3155,6 +3164,180 @@ def scale_to_C(d, g, fl, masses, T_amb, C_t):
 # ------------------------------------------------------------------ #
 #  v5: full narrative report (in-app tab + HTML export)               #
 # ------------------------------------------------------------------ #
+
+# ------------------------------------------------------------------ #
+#  v7.1: BEV road-car pack benchmark database (user-supplied)         #
+# ------------------------------------------------------------------ #
+_BM_COLS = {
+ "Model/Pack": "model", "Energy": "E_use", "Unnamed: 2": "E_tot",
+ "Nominal Capacity": "cap_Ah", "Power": "P10s_kW", "Pack Mass": "m_pack",
+ "Cell Mass": "m_cells", "Pack-Cells": "m_noncell",
+ "Cell to Pack Ratio": "ctp_m", "Pack Dimensions": "dx", "Unnamed: 10": "dy",
+ "Unnamed: 11": "dz", "Pack Volume": "V_pack", "Cell Total Volume": "V_cells",
+ "Cell to Pack Ratio.1": "ctp_v", "Pack-Cells.1": "V_noncell",
+ "Gravimetric Energy Density": "whkg", "Volumetric Energy Density": "whl",
+ "Gravimetric Power Density": "w10s_kg", "Unnamed: 19": "wcont_kg_dis",
+ "Unnamed: 20": "wcont_kg_chg", "Volumetric Power Density": "w10s_l",
+ "Unnamed: 22": "wcont_l"}
+
+def load_benchmark(path="pack_benchmark.xlsx"):
+    try:
+        df = pd.read_excel(path, sheet_name="Sheet1").rename(columns=_BM_COLS)
+    except Exception:
+        return None
+    df = df.iloc[1:].reset_index(drop=True)
+    for c in df.columns:
+        if c != "model":
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    df["whkg"] = df["whkg"].fillna(df["E_tot"] * 1000 / df["m_pack"])
+    df["whl"] = df["whl"].fillna(df["E_tot"] * 1000 / df["V_pack"])
+    df["kW_kg_10s"] = df["P10s_kW"] / df["m_pack"] * 1000
+    df["C10s"] = df["P10s_kW"] / df["E_tot"]
+    return df
+
+def _pct(series, val):
+    s = series.dropna()
+    return 100.0 * (s < val).mean() if len(s) else float("nan")
+
+def benchmark_db_tab(d, g, masses, Cmax, res):
+    bm = load_benchmark()
+    if bm is None:
+        st.warning("pack_benchmark.xlsx not found next to app.py.")
+        return None
+    st.caption(f"{len(bm)} BEV road-car packs from your file "
+               "(batterydesign.net database, filtered). Star = this design; "
+               "hollow star = this design with the FEA-honest ribbed "
+               "enclosure (knock-down 0.56 instead of 0.45).")
+    f1, f2, f3 = st.columns([1.2, 1, 1])
+    e_rng = f1.slider("Pack energy filter [kWh]", 0.0,
+                      float(np.ceil(bm["E_tot"].max() / 10) * 10),
+                      (0.0, float(np.ceil(bm["E_tot"].max() / 10) * 10)),
+                      key="bm_e")
+    q = f2.text_input("Search model", "", key="bm_q")
+    only_p = f3.toggle("Only packs with 10 s power", False, key="bm_p")
+    v = bm[(bm["E_tot"] >= e_rng[0]) & (bm["E_tot"] <= e_rng[1])]
+    if q:
+        v = v[v["model"].str.contains(q, case=False, na=False)]
+    if only_p:
+        v = v[v["P10s_kW"].notna()]
+    my_whkg, my_whl = masses["whkg_pack"], masses["whl_pack"]
+    m_rib = masses["m_pack"] - masses["m_struct"] + masses["m_struct"] * 0.56 / 0.45
+    whkg_rib = masses["E_kwh"] * 1000 / m_rib
+    kpi_cards([
+        ("Packs shown", f"{len(v)}", f"of {len(bm)} in the file", ""),
+        ("Wh/kg percentile", f"{_pct(bm['whkg'], my_whkg):.0f}%",
+         f"this design: {my_whkg:.0f} Wh/kg", "brand"),
+        ("Wh/L percentile", f"{_pct(bm['whl'], my_whl):.0f}%",
+         f"this design: {my_whl:.0f} Wh/L", "brand"),
+        ("Cell-to-pack mass", f"{100*masses['m_cells']/masses['m_pack']:.0f}%",
+         f"database median {100*bm['ctp_m'].median():.0f}%", ""),
+    ])
+    # ---- A: energy density map ----
+    figA = go.Figure()
+    figA.add_trace(go.Scatter(
+        x=v["whkg"], y=v["whl"], mode="markers", name="BEV packs",
+        marker=dict(size=6 + 22 * v["E_tot"] / bm["E_tot"].max(),
+                    color=v["C10s"], colorscale="Viridis",
+                    colorbar=dict(title="10 s C-rate"), opacity=0.85,
+                    line=dict(color="white", width=1)),
+        hovertext=[f"<b>{m}</b><br>{e:.0f} kWh, {mm:.0f} kg<br>"
+                   f"{wk:.0f} Wh/kg, {wl:.0f} Wh/L"
+                   + (f"<br>{p:.0f} kW 10 s ({c:.1f}C)" if p == p else "")
+                   for m, e, mm, wk, wl, p, c in zip(
+                       v["model"], v["E_tot"], v["m_pack"], v["whkg"],
+                       v["whl"], v["P10s_kW"], v["C10s"])],
+        hoverinfo="text"))
+    figA.add_trace(go.Scatter(x=[my_whkg], y=[my_whl], mode="markers+text",
+        text=["This design"], textposition="top center",
+        marker=dict(symbol="star", size=22, color="#EF4444",
+                    line=dict(color="white", width=2)), name="This design"))
+    figA.add_trace(go.Scatter(x=[whkg_rib], y=[my_whl * masses["m_pack"] / m_rib * 0 + my_whl],
+        mode="markers", name="FEA-honest enclosure",
+        marker=dict(symbol="star-open", size=18, color="#EF4444",
+                    line=dict(width=2))))
+    figA.update_layout(height=460, xaxis_title="Gravimetric [Wh/kg]",
+                       yaxis_title="Volumetric [Wh/L]",
+                       title="Energy-density map (bubble size = pack kWh, "
+                             "colour = 10 s C-rate)",
+                       legend=dict(orientation="h", y=1.12))
+    st.plotly_chart(figA, use_container_width=True, key="bm_A", config=PLOTCFG)
+    cB, cC = st.columns(2)
+    with cB:
+        vp = v[v["kW_kg_10s"].notna()]
+        figB = go.Figure()
+        figB.add_trace(go.Scatter(x=vp["whkg"], y=vp["kW_kg_10s"], mode="markers",
+            name="10 s (database)", marker=dict(size=9, color="#6366F1",
+            opacity=0.8), hovertext=vp["model"], hoverinfo="text+x+y"))
+        vc = v[v["wcont_kg_dis"].notna()]
+        figB.add_trace(go.Scatter(x=vc["whkg"], y=vc["wcont_kg_dis"],
+            mode="markers", name="continuous (database)",
+            marker=dict(size=10, color="#0EA5E9", symbol="diamond"),
+            hovertext=vc["model"], hoverinfo="text+x+y"))
+        my_cont = Cmax * masses["E_kwh"] * 1000 / masses["m_pack"]
+        figB.add_trace(go.Scatter(x=[my_whkg], y=[my_cont], mode="markers+text",
+            text=["this (cont.)"], textposition="top center",
+            marker=dict(symbol="star", size=18, color="#EF4444"),
+            name="This design, continuous"))
+        figB.add_trace(go.Scatter(x=[68.5], y=[150000 / 89], mode="markers+text",
+            text=["AMG HPB80 (peak)"], textposition="bottom center",
+            marker=dict(symbol="x", size=12, color="#D97706"), name="HPB80"))
+        figB.update_layout(height=380, xaxis_title="Wh/kg",
+                           yaxis_title="W/kg",
+                           title="Power vs energy density - 10 s ratings vs "
+                                 "this design's thermal continuous",
+                           legend=dict(orientation="h", y=1.15))
+        st.plotly_chart(figB, use_container_width=True, key="bm_B",
+                        config=PLOTCFG)
+        st.caption("Honest comparison note: database power is a 10 s rating; "
+                   "the red star is this design's thermally continuous "
+                   "capability, which is the harder number.")
+    with cC:
+        vr = v.dropna(subset=["whkg"]).sort_values("whkg", ascending=True)
+        vr = pd.concat([vr.tail(18)])
+        figC = go.Figure(go.Bar(y=vr["model"], x=vr["whkg"], orientation="h",
+                                marker_color="#94A3B8"))
+        figC.add_vline(x=my_whkg, line_color="#EF4444", line_width=3,
+                       annotation_text=f"this design {my_whkg:.0f}")
+        figC.add_vline(x=68.5, line_color="#D97706", line_dash="dot",
+                       annotation_text="HPB80")
+        figC.update_layout(height=380, xaxis_title="Wh/kg",
+                           title="Top of the field vs this design")
+        st.plotly_chart(figC, use_container_width=True, key="bm_C")
+    with st.expander("Cell-to-pack ratios and the full table"):
+        vm = bm.dropna(subset=["ctp_m"]).sort_values("ctp_m")
+        figD = go.Figure(go.Bar(x=vm["model"], y=100 * vm["ctp_m"],
+                                marker_color="#0EA5E9"))
+        figD.add_hline(y=100 * masses["m_cells"] / masses["m_pack"],
+                       line_color="#EF4444", line_width=3,
+                       annotation_text=f"this design "
+                       f"{100*masses['m_cells']/masses['m_pack']:.0f}%")
+        figD.update_layout(height=320, yaxis_title="cell mass / pack mass [%]",
+                           title="Cell-to-pack mass ratio (higher = less "
+                                 "overhead)", xaxis_tickangle=-40)
+        st.plotly_chart(figD, use_container_width=True, key="bm_D")
+        show = v[["model", "E_use", "E_tot", "m_pack", "whkg", "whl",
+                  "P10s_kW", "C10s", "ctp_m", "V_pack"]].round(1)
+        st.dataframe(show, hide_index=True, use_container_width=True,
+                     height=340)
+        st.download_button("Download filtered set (.csv)",
+                           show.to_csv(index=False), "pack_benchmark_view.csv",
+                           key="bm_dl")
+    near = bm.dropna(subset=["whkg", "whl"]).copy()
+    near["dist"] = np.hypot((near["whkg"] - my_whkg) / bm["whkg"].std(),
+                            (near["whl"] - my_whl) / bm["whl"].std())
+    nn = near.nsmallest(3, "dist")["model"].tolist()
+    st.markdown(f"**Where this design sits:** {my_whkg:.0f} Wh/kg puts it at "
+                f"the **{_pct(bm['whkg'], my_whkg):.0f}th percentile** of BEV "
+                f"road-car packs and {my_whl:.0f} Wh/L at the "
+                f"**{_pct(bm['whl'], my_whl):.0f}th**; its nearest neighbours "
+                f"in the database are {', '.join(nn)}. The gap to the field "
+                "is the immersion tax: oil "
+                f"({masses['m_oil']:.0f} kg) and the pressure-rated enclosure "
+                f"({masses['m_struct']:.0f} kg). The counter-argument this "
+                "database cannot show is thermal: abuse tolerance, "
+                "uniformity, and the flywheel.")
+    return figA
+
 def report_sections(d, g, fl, res, masses, tr, spec, Cmax, C_steady, Q_duty,
                     Q_bus, P_pump, P_stir, chil, figs):
     ok = (res["T_core"] if d["limit_core"] else res["T_b"]) <= d["T_limit"]

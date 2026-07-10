@@ -982,7 +982,7 @@ def runaway_screen(d, g, fl, masses) -> dict:
 # ------------------------------------------------------------------ #
 #  Plan-view layout figure                                            #
 # ------------------------------------------------------------------ #
-def layout_figure(d, g):
+def layout_figure(d, g, height=560):
     xs, ys, cs = [], [], []
     cnt = 0
     for r in range(g["n_rows"]):
@@ -1011,7 +1011,7 @@ def layout_figure(d, g):
                                  line=dict(color="#0EA5E9", width=3), hoverinfo="skip"))
     fig.update_yaxes(scaleanchor="x", scaleratio=1, visible=False)
     fig.update_xaxes(visible=False)
-    fig.update_layout(height=560, margin=dict(l=10, r=10, t=40, b=10),
+    fig.update_layout(height=height, margin=dict(l=10, r=10, t=40, b=10),
                       title=f"Plan view: {g['n_cols']} x {g['n_rows']} grid "
                             f"({d['arrangement'].lower()}), {d['n_tubes']} tube runs (blue) "
                             "in the zone above - cell colour hints centre-vs-edge tendency",
@@ -1985,7 +1985,7 @@ def _mesh(V, F, I, **kw):
                      intensity=np.array(I), flatshading=True, **kw)
 
 def pack_3d_figure(d, g, show_oil=True, show_tubes=True, show_box=True,
-                   show_fins=True):
+                   show_fins=True, height=480):
     fig = go.Figure()
     # --- cells, coloured by centre-vs-edge tendency ---
     V, F, I = [], [], []
@@ -2002,7 +2002,7 @@ def pack_3d_figure(d, g, show_oil=True, show_tubes=True, show_box=True,
             _add_cyl_z(V, F, I, x, y, z0, z1, d["d_cell"] / 2, val, n=10)
             cnt += 1
     fig.add_trace(_mesh(V, F, I, colorscale="RdYlBu_r", showscale=False,
-                        name="cells", lighting=dict(ambient=0.55, diffuse=0.7)))
+                        name="cells", lighting=dict(ambient=0.72, diffuse=0.75, specular=0.15)))
     # --- tubes (+ translucent fin envelope) ---
     if show_tubes:
         Vt, Ft, It = [], [], []
@@ -2026,14 +2026,14 @@ def pack_3d_figure(d, g, show_oil=True, show_tubes=True, show_box=True,
                             showscale=False, name="tubes"))
         if Vf:
             fig.add_trace(_mesh(Vf, Ff, If_, colorscale=[[0, "#A5B4CC"], [1, "#A5B4CC"]],
-                                showscale=False, opacity=0.28, name="fin envelope"))
+                                showscale=False, opacity=0.16, name="fin envelope"))
     # --- oil fill ---
     if show_oil:
         fz = g["fill_h"]
         xs = [0, g["Lx"], g["Lx"], 0, 0, g["Lx"], g["Lx"], 0]
         ys = [0, 0, g["Ly"], g["Ly"], 0, 0, g["Ly"], g["Ly"]]
         zs = [0, 0, 0, 0, fz, fz, fz, fz]
-        fig.add_trace(go.Mesh3d(x=xs, y=ys, z=zs, alphahull=0, opacity=0.13,
+        fig.add_trace(go.Mesh3d(x=xs, y=ys, z=zs, alphahull=0, opacity=0.10,
                                 color="#F59E0B", name="oil", hoverinfo="skip"))
     # --- enclosure wireframe ---
     if show_box:
@@ -2048,11 +2048,11 @@ def pack_3d_figure(d, g, show_oil=True, show_tubes=True, show_box=True,
                                    line=dict(color=INK, width=3),
                                    name="enclosure", hoverinfo="skip"))
     fig.update_layout(
-        height=620, margin=dict(l=0, r=0, t=30, b=0), showlegend=False,
+        height=height, margin=dict(l=0, r=0, t=30, b=0), showlegend=False,
         scene=dict(aspectmode="data",
                    xaxis=dict(visible=False), yaxis=dict(visible=False),
                    zaxis=dict(visible=False),
-                   camera=dict(eye=dict(x=1.45, y=1.25, z=0.85)),
+                   camera=dict(eye=dict(x=1.15, y=-1.35, z=0.95)),
                    bgcolor="rgba(0,0,0,0)"),
         paper_bgcolor="rgba(0,0,0,0)",
         title=f"{g['N']} x {d['fmt']} cells, {d['n_tubes']} tubes "
@@ -2074,6 +2074,131 @@ def thin_labels(xs, ys, names, logx=False, min_dx=0.10, min_dy=0.12):
                or abs(ys[idx] - ys[j]) / yspan > min_dy for j in kept):
             kept.append(idx); out[idx] = names[idx]
     return out
+
+
+def pack_views_fig(d, g, masses, height=560):
+    """Engineering triptych: plan (x-y) on top, side section (y-z, tubes as
+    circles with fins and plates) and front section (x-z, tube runs) below.
+    Shows oil level, headspace, bottom gap, wall thickness and key dims."""
+    from plotly.subplots import make_subplots
+    fig = make_subplots(rows=2, cols=2, specs=[[{"colspan": 2}, None],
+                                               [{}, {}]],
+                        row_heights=[0.52, 0.48], horizontal_spacing=0.07,
+                        vertical_spacing=0.14,
+                        subplot_titles=("Plan  (x-y)",
+                                        "Side section  (y-z)",
+                                        "Front section  (x-z)"))
+    Lx, Ly, Lz, fz = g["Lx"], g["Ly"], g["Lz"], g["fill_h"]
+    tw = masses["enc"]["t_mm"] / 1000
+    OIL, CELL, TUBE, FINC, PLATE, WALL = ("rgba(245,158,11,0.20)", "#9AA7B8",
+                                          "#D97706", "rgba(165,180,204,0.55)",
+                                          "#6366F1", "#0F172A")
+    inter = d.get("tube_plane") == "Interstitial (between rows)"
+    z_tube = (d["bottom_gap"] + d["h_cell"] * 0.5) if inter else              (d["bottom_gap"] + d["h_cell"] + d["tube_zone"] / 2)
+    r_t, r_f = d["tube_od"] / 2, d["tube_od"] / 2 + (d["fin_h"] if d["fins_on"] else 0)
+
+    def wallrect(row, col, W, H):
+        fig.add_shape(type="rect", x0=-tw, y0=-tw, x1=W + tw, y1=H + tw,
+                      line=dict(color=WALL, width=1.5),
+                      fillcolor="rgba(15,23,42,0.05)", row=row, col=col)
+        fig.add_shape(type="rect", x0=0, y0=0, x1=W, y1=H,
+                      line=dict(color=WALL, width=1), fillcolor="white",
+                      row=row, col=col)
+
+    # ---------- plan ----------
+    wallrect(1, 1, Lx, Ly)
+    fig.add_shape(type="rect", x0=0, y0=0, x1=Lx, y1=Ly, fillcolor=OIL,
+                  line=dict(width=0), row=1, col=1)
+    step = max(1, g["N"] // 400)          # cap plan markers for speed
+    xs, ys = [], []
+    cnt = 0
+    for r_ in range(g["n_rows"]):
+        for c_ in range(g["n_cols"]):
+            if cnt >= g["N"]: break
+            if cnt % step == 0:
+                xs.append(d["edge_margin"] + (c_ + 0.5) * d["pitch"]
+                          + (d["pitch"] / 2 if (d["arrangement"] == "Hexagonal"
+                                                and r_ % 2) else 0))
+                ys.append(d["edge_margin"] + d["pitch"] / 2 + r_ * g["row_pitch"])
+            cnt += 1
+    fig.add_trace(go.Scatter(x=xs, y=ys, mode="markers", hoverinfo="skip",
+                             marker=dict(size=max(3, d["d_cell"] / Lx * 430),
+                                         color=CELL, line=dict(width=0)),
+                             showlegend=False), row=1, col=1)
+    for j in range(d["n_tubes"]):
+        yj = ((j % max(g["n_rows"] - 1, 1) + 0.5) * g["row_pitch"]
+              * (g["n_rows"] - 1) / max(g["n_rows"] - 1, 1)
+              + d["edge_margin"] + d["pitch"] / 2) if inter else              (j + 0.5) * Ly / d["n_tubes"]
+        fig.add_shape(type="line", x0=d["manifold_margin"], y0=yj,
+                      x1=Lx - d["manifold_margin"], y1=yj,
+                      line=dict(color=TUBE, width=2.5), row=1, col=1)
+
+    # ---------- side section (y-z): tubes as circles ----------
+    wallrect(2, 1, Ly, Lz)
+    fig.add_shape(type="rect", x0=0, y0=0, x1=Ly, y1=fz, fillcolor=OIL,
+                  line=dict(width=0), row=2, col=1)
+    for r_ in range(g["n_rows"]):
+        yc = d["edge_margin"] + d["pitch"] / 2 + r_ * g["row_pitch"]
+        fig.add_shape(type="rect", x0=yc - d["d_cell"] / 2, y0=d["bottom_gap"],
+                      x1=yc + d["d_cell"] / 2, y1=d["bottom_gap"] + d["h_cell"],
+                      line=dict(color="#7C8797", width=0.8), fillcolor=CELL,
+                      row=2, col=1)
+    if d.get("plate_on"):
+        for r_ in range(g["n_rows"] - 1):
+            yp = d["edge_margin"] + d["pitch"] / 2 + (r_ + 0.5) * g["row_pitch"]
+            fig.add_shape(type="line", x0=yp, y0=d["bottom_gap"],
+                          x1=yp, y1=d["bottom_gap"] + d["h_cell"],
+                          line=dict(color=PLATE, width=2.5), row=2, col=1)
+    for j in range(d["n_tubes"]):
+        yj = ((j % max(g["n_rows"] - 1, 1) + 0.5) * g["row_pitch"]
+              + d["edge_margin"] + d["pitch"] / 2) if inter else              (j + 0.5) * Ly / d["n_tubes"]
+        zj = z_tube if not inter else              d["bottom_gap"] + d["h_cell"] * (0.3 + 0.4 * ((j // max(g["n_rows"]-1,1)) % 2))
+        if d["fins_on"]:
+            fig.add_shape(type="circle", x0=yj - r_f, y0=zj - r_f,
+                          x1=yj + r_f, y1=zj + r_f, fillcolor=FINC,
+                          line=dict(width=0), row=2, col=1)
+        fig.add_shape(type="circle", x0=yj - r_t, y0=zj - r_t,
+                      x1=yj + r_t, y1=zj + r_t, fillcolor=TUBE,
+                      line=dict(color="#B45309", width=1), row=2, col=1)
+
+    # ---------- front section (x-z): tube runs ----------
+    wallrect(2, 2, Lx, Lz)
+    fig.add_shape(type="rect", x0=0, y0=0, x1=Lx, y1=fz, fillcolor=OIL,
+                  line=dict(width=0), row=2, col=2)
+    fig.add_shape(type="rect", x0=d["edge_margin"], y0=d["bottom_gap"],
+                  x1=Lx - d["edge_margin"], y1=d["bottom_gap"] + d["h_cell"],
+                  fillcolor=CELL, line=dict(color="#7C8797", width=0.8),
+                  opacity=0.85, row=2, col=2)
+    band = r_f if d["fins_on"] else r_t
+    fig.add_shape(type="rect", x0=d["manifold_margin"], y0=z_tube - band,
+                  x1=Lx - d["manifold_margin"], y1=z_tube + band,
+                  fillcolor=FINC, line=dict(width=0), row=2, col=2)
+    fig.add_shape(type="rect", x0=d["manifold_margin"], y0=z_tube - r_t,
+                  x1=Lx - d["manifold_margin"], y1=z_tube + r_t,
+                  fillcolor=TUBE, line=dict(width=0), row=2, col=2)
+
+    # dims + oil level annotations
+    for rc, W, H in [((1, 1), Lx, Ly), ((2, 1), Ly, Lz), ((2, 2), Lx, Lz)]:
+        fig.add_annotation(x=W / 2, y=-tw - 0.012, text=f"{W*1000:.0f} mm",
+                           showarrow=False, font=dict(size=10, color="#64748B"),
+                           row=rc[0], col=rc[1])
+    for col in (1, 2):
+        fig.add_annotation(x=0.012, y=fz, text=f"oil {fz*1000:.0f}",
+                           showarrow=False, xanchor="left", yanchor="bottom",
+                           font=dict(size=10, color="#B45309"),
+                           row=2, col=col)
+    for rc in [(1, 1), (2, 1), (2, 2)]:
+        fig.update_xaxes(visible=False, row=rc[0], col=rc[1])
+        fig.update_yaxes(visible=False, scaleanchor="x" if rc == (1, 1) else None,
+                         row=rc[0], col=rc[1])
+    fig.update_yaxes(scaleanchor="x", scaleratio=1, row=1, col=1)
+    fig.update_yaxes(scaleanchor="x3", scaleratio=1, row=2, col=1)
+    fig.update_yaxes(scaleanchor="x4", scaleratio=1, row=2, col=2)
+    fig.update_layout(height=height, margin=dict(l=8, r=8, t=34, b=8),
+                      showlegend=False)
+    for a in fig.layout.annotations[:3]:
+        a.font = dict(size=12, color="#334155")
+    return fig
 
 # ------------------------------------------------------------------ #
 #  v4: input panels (workbench layout)                                #
@@ -2387,19 +2512,24 @@ def main():
     with colR:
         with st.container(key="liveview"):
             with st.container(border=True):
-                v1, v2, v3 = st.columns([1.4, 1, 1])
-                view = v1.radio("View", ["3D", "Plan"], horizontal=True,
+                v1, v2, v3 = st.columns([2.2, 0.8, 0.8])
+                view = v1.radio("View", ["Views", "3D", "Plan"],
+                                horizontal=True,
                                 label_visibility="collapsed")
                 s_oil = v2.toggle("Oil", True)
                 s_box = v3.toggle("Box", True)
                 s_tub, s_fin = True, True
-                if view == "3D":
+                if view == "Views":
+                    st.plotly_chart(pack_views_fig(d, g, masses, height=520),
+                                    use_container_width=True, key="liveviews",
+                                    config=PLOTCFG)
+                elif view == "3D":
                     st.plotly_chart(pack_3d_figure(d, g, s_oil, s_tub, s_box,
-                                                   s_fin),
+                                                   s_fin, height=470),
                                     use_container_width=True, key="live3d",
                                     config=PLOTCFG)
                 else:
-                    st.plotly_chart(layout_figure(d, g),
+                    st.plotly_chart(layout_figure(d, g, height=470),
                                     use_container_width=True, key="liveplan")
                 T_gov0 = res["T_core"] if d["limit_core"] else res["T_b"]
                 ok0 = T_gov0 <= d["T_limit"]
@@ -2846,41 +2976,41 @@ def chiller_model(Q_w, T_w_in, T_amb, eta=0.45, approach=5.0, cond_dT=10.0):
     return dict(COP=COP, P_el=Q_w / COP, lift=lift)
 
 def heat_sankey(res, Q_duty, Q_bus, P_pump, P_stir, chil):
-    """Left = sources, right = sinks. Link width = watts; colours follow the
-    physical stream (red heat, amber oil, blue water, grey rejection)."""
+    """Left = sources, right = sinks. Ribbon width = watts."""
     kw = lambda v: f"{v/1000:.2f} kW" if v >= 100 else f"{v:.0f} W"
     Qc = max(Q_duty - Q_bus, 1e-3)
-    lab = [f"Cells<br>{kw(Qc)}", f"Busbars<br>{kw(Q_bus)}",
-           f"Bulk oil<br>{kw(Q_duty)}", f"Water loop<br>{kw(res['Q_w'])}",
-           f"Casing loss<br>{kw(res['Q_atm'])}",
-           f"Chiller<br>{kw(res['Q_w']+P_pump)} duty",
-           f"To ambient<br>{kw(res['Q_w']+P_pump+chil['P_el'])}",
-           f"Chiller electricity<br>{kw(chil['P_el'])}"]
+    lab = [f"Cells  {kw(Qc)}", f"Busbars  {kw(Q_bus)}",
+           f"Bulk oil  {kw(Q_duty)}", f"Water loop  {kw(res['Q_w'])}",
+           f"Casing loss  {kw(res['Q_atm'])}",
+           f"Chiller  {kw(res['Q_w']+P_pump)}",
+           f"To ambient  {kw(res['Q_w']+P_pump+chil['P_el'])}",
+           f"Chiller electricity  {kw(chil['P_el'])}"]
     node_c = ["#EF4444", "#D97706", "#F59E0B", "#0EA5E9", "#94A3B8",
               "#6366F1", "#64748B", "#10B981"]
-    x = [0.01, 0.01, 0.28, 0.55, 0.99, 0.78, 0.99, 0.55]
-    y = [0.30, 0.75, 0.42, 0.35, 0.88, 0.42, 0.32, 0.80]
+    x = [0.01, 0.01, 0.30, 0.55, 0.72, 0.78, 0.99, 0.55]
+    y = [0.36, 0.86, 0.45, 0.38, 0.93, 0.44, 0.40, 0.78]
     srcs = [0, 1, 2, 2, 3, 7, 5]
     dsts = [2, 2, 3, 4, 5, 5, 6]
     vals = [Qc, max(Q_bus, 1e-3), max(res["Q_w"], 1e-3),
             max(res["Q_atm"], 1e-3), max(res["Q_w"] + P_pump, 1e-3),
             max(chil["P_el"], 1e-3),
             max(res["Q_w"] + P_pump + chil["P_el"], 1e-3)]
-    def rgba(hx, a=0.35):
+    def rgba(hx, a=0.32):
         return f"rgba({int(hx[1:3],16)},{int(hx[3:5],16)},{int(hx[5:7],16)},{a})"
-    link_c = [rgba(node_c[s]) for s in srcs]
     fig = go.Figure(go.Sankey(
-        arrangement="fixed",
-        node=dict(label=lab, x=x, y=y, pad=22, thickness=20, color=node_c,
-                  line=dict(width=0),
+        arrangement="fixed", valueformat=".0f", valuesuffix=" W",
+        node=dict(label=lab, x=x, y=y, pad=26, thickness=24, color=node_c,
+                  line=dict(color="rgba(255,255,255,.9)", width=1),
                   hovertemplate="%{label}<extra></extra>"),
-        link=dict(source=srcs, target=dsts, value=vals, color=link_c,
-                  hovertemplate="%{source.label} to %{target.label}: "
-                                "%{value:.0f} W<extra></extra>")))
-    fig.update_layout(height=360, margin=dict(l=10, r=10, t=56, b=10),
-                      font=dict(size=12),
-                      title="Heat flow map: every watt from the cells to the "
-                            "air outside (hover any ribbon)")
+        link=dict(source=srcs, target=dsts, value=vals,
+                  color=[rgba(node_c[s]) for s in srcs],
+                  hovertemplate="%{source.label}  →  %{target.label}"
+                                "<br>%{value:.0f} W<extra></extra>"),
+        textfont=dict(family="Inter, -apple-system, sans-serif", size=14,
+                      color="#0F172A")))
+    fig.update_layout(height=340, margin=dict(l=10, r=10, t=52, b=16),
+                      title="Heat flow map - every watt from the cells to "
+                            "the air outside")
     return fig
 
 

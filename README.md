@@ -166,3 +166,14 @@ honest 10 s vs continuous caveat, ranked field vs this design, cell-to-pack
 ratio comparison, full table with CSV export, percentile cards and a
 nearest-neighbour summary. The FEA-honest enclosure variant plots as a
 second marker. Keep pack_benchmark.xlsx next to app.py.
+
+## v7.2: clearer heat-flow map and engineering triptych
+Sankey rebuilt: single-line kW-in-label nodes with clean typography, short
+casing branch (no cross-canvas ribbon), watt-labelled hovers. The live
+design panel defaults to a three-view engineering drawing - plan plus two
+true-scale sections - showing tubes as circles with their fin annuli,
+serpentine plates, oil level and headspace, bottom gap, enclosure wall
+thickness and outer dimensions; interstitial routing draws correctly. 3D
+stays as an option, resized to fit the panel with a livelier camera and
+lighting; plan view height also fits. All three views follow every design
+change live.
